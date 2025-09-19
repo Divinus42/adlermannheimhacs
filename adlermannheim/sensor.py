@@ -6,7 +6,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-ADLER_CLUB_ID = 6  # Adler Mannheim Club ID, anpassen falls nötig
+ADLER_CLUB_ID = 6  # Adler Mannheim Club ID
 
 # Liste der Sensoren, die wir erstellen wollen
 SENSOR_TYPES = [
@@ -15,14 +15,26 @@ SENSOR_TYPES = [
     "next_game",
 ]
 
+GOAL_SENSOR_TYPES = [
+    "current_goals_home",
+    "current_goals_away",
+    "current_goals_total",
+]
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Adler Mannheim sensors."""
     coordinator = hass.data["adlermannheim"][entry.entry_id]
 
     sensors = []
+
+    # Normale Spiel-Sensoren
     for sensor_type in SENSOR_TYPES:
         sensors.append(AdlerMannheimSensor(coordinator, sensor_type))
+
+    # Goal-Sensoren nur für laufendes Spiel
+    for sensor_type in GOAL_SENSOR_TYPES:
+        sensors.append(AdlerMannheimGoalSensor(coordinator, sensor_type))
 
     async_add_entities(sensors, True)
 
@@ -42,7 +54,6 @@ class AdlerMannheimSensor(CoordinatorEntity, SensorEntity):
         game = self.coordinator.data.get(self._sensor_type)
         if not game:
             return None
-        # Status als Hauptzustand
         return game.get("status")
 
     @property
@@ -55,7 +66,6 @@ class AdlerMannheimSensor(CoordinatorEntity, SensorEntity):
         home_team = game.get("hometeam", {})
         away_team = game.get("awayteam", {})
 
-        # Gegner ermitteln
         if game.get("homeclubid") == ADLER_CLUB_ID:
             opponent = game.get("awayteam")
             is_home = True
@@ -63,13 +73,12 @@ class AdlerMannheimSensor(CoordinatorEntity, SensorEntity):
             opponent = game.get("hometeam")
             is_home = False
 
-        # Zeit umwandeln
         match_time = None
         if game.get("matchstart"):
             try:
                 match_time = datetime.fromisoformat(game["matchstart"])
             except Exception:
-                match_time = game["matchstart"]
+                match_time = game.get("matchstart")
 
         return {
             "game_id": game.get("id"),
@@ -81,6 +90,63 @@ class AdlerMannheimSensor(CoordinatorEntity, SensorEntity):
             "score_away": game.get("awayscore"),
             "match_start": match_time,
             "status": game.get("status"),
-            "goals": game.get("goals", []),
-            "penalties": game.get("penalties", []),
+        }
+
+
+class AdlerMannheimGoalSensor(CoordinatorEntity, SensorEntity):
+    """Sensor für Tore im aktuellen Spiel."""
+
+    def __init__(self, coordinator, sensor_type):
+        super().__init__(coordinator)
+        self._sensor_type = sensor_type
+        self._attr_name = f"Adler Mannheim {sensor_type.replace('_', ' ').title()}"
+        self._attr_unique_id = f"adler_mannheim_{sensor_type}"
+
+    @property
+    def state(self):
+        """Return the number of goals."""
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return None
+
+        home_goals = game.get("homescore", 0) or 0
+        away_goals = game.get("awayscore", 0) or 0
+
+        if self._sensor_type == "current_goals_home":
+            return home_goals
+        elif self._sensor_type == "current_goals_away":
+            return away_goals
+        elif self._sensor_type == "current_goals_total":
+            return home_goals + away_goals
+        return None
+
+    @property
+    def extra_state_attributes(self):
+        """Zusatzinfos: Tore + Flag, ob Adler-Tor."""
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return None
+
+        goals = []
+        adler_is_home = game.get("homeclubid") == ADLER_CLUB_ID
+
+        for goal in game.get("goals", []):
+            scoring_team_id = goal.get("clubid")
+            is_adler_goal = (
+                adler_is_home and scoring_team_id == game.get("homeclubid")
+            ) or (not adler_is_home and scoring_team_id == game.get("awayclubid"))
+
+            goals.append(
+                {
+                    "time": goal.get("time"),
+                    "scorer": goal.get("scorer"),
+                    "assists": goal.get("assists", []),
+                    "team": "Adler Mannheim" if is_adler_goal else "Opponent",
+                    "is_adler_goal": is_adler_goal,
+                }
+            )
+
+        return {
+            "adler_is_home": adler_is_home,
+            "goals": goals,
         }
