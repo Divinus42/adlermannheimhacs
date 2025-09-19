@@ -1,0 +1,14 @@
+{
+  "domain": "adlermannheim",
+  "name": "Adler Mannheim",
+  "version": "0.0.1",
+  "codeowners": ["@divinus42"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/adlermannheim",
+  "homekit": {},
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": []
+}
