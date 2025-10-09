@@ -1,9 +1,9 @@
 import asyncio
-from datetime import timedelta
+from datetime import timedelta, datetime
 import logging
 
 import aiohttp
-
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,10 +21,9 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="Adler Mannheim",
-            update_interval=timedelta(
-                minutes=30
-            ),  # Update manuell triggern oder später anpassen
+            update_interval=None,  # Wir planen selbst manuell
         )
+        self._unsub_timer = None
 
     async def _async_update_data(self):
         try:
@@ -37,7 +36,7 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
 
                 # 2. Spiele nach Status filtern
                 finished = [g for g in games if g["status"] == "FINAL"]
-                running = [g for g in games if g["status"] == "RUNNING"]
+                running = [g for g in games if g["status"] == "LIVE"]
                 future = [g for g in games if g["status"] == "FUTURE"]
 
                 last_game = None
@@ -73,10 +72,8 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
                     fetch_detail(next_game),
                 )
 
-                if current_game:
-                    self.update_interval = timedelta(minutes=1)
-                else:
-                    self.update_interval = timedelta(minutes=30)
+                # 🔁 Update-Planung anpassen
+                self._schedule_next_refresh(current_game is not None)
 
                 return {
                     "last_game": last_game,
@@ -87,3 +84,25 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             raise UpdateFailed(f"Error fetching Adler Mannheim data: {err}")
+
+    def _schedule_next_refresh(self, running: bool):
+        """Plane das nächste Update zur vollen Minute oder halben Stunde."""
+        if self._unsub_timer:
+            self._unsub_timer()  # alten Timer entfernen
+
+        now = datetime.now()
+
+        if running:
+            # Jede volle Minute
+            next_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+        else:
+            # Zur nächsten vollen oder halben Stunde
+            minute = 0 if now.minute < 30 else 30
+            next_time = now.replace(minute=minute, second=0, microsecond=0)
+            if next_time <= now:
+                next_time += timedelta(minutes=30)
+
+        _LOGGER.debug(f"Nächstes Update geplant für {next_time}")
+        self._unsub_timer = async_track_point_in_time(
+            self.hass, lambda _: self.async_request_refresh(), next_time
+        )
