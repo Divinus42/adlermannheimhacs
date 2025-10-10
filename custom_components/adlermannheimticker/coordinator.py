@@ -1,5 +1,6 @@
 import asyncio
-from datetime import timedelta, datetime
+from homeassistant.util import dt as dt_util
+from datetime import timedelta
 import logging
 
 import aiohttp
@@ -86,23 +87,33 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error fetching Adler Mannheim data: {err}")
 
     def _schedule_next_refresh(self, running: bool):
-        """Plane das nächste Update zur vollen Minute oder halben Stunde."""
+        """Plane das nächste Update zur vollen Minute oder halben Stunde (UTC-basiert)."""
+        # Alten Timer entfernen, falls vorhanden
         if self._unsub_timer:
-            self._unsub_timer()  # alten Timer entfernen
+            self._unsub_timer()
+            self._unsub_timer = None
 
-        now = datetime.now()
-
+        now = dt_util.utcnow()
         if running:
-            # Jede volle Minute
             next_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+            interval_desc = "jede volle Minute"
         else:
-            # Zur nächsten vollen oder halben Stunde
             minute = 0 if now.minute < 30 else 30
             next_time = now.replace(minute=minute, second=0, microsecond=0)
             if next_time <= now:
                 next_time += timedelta(minutes=30)
+            interval_desc = "volle/halbe Stunde"
 
-        _LOGGER.debug(f"Nächstes Update geplant für {next_time}")
+        local_next = dt_util.as_local(next_time)
+        _LOGGER.debug(
+            f"Plane nächstes Update ({interval_desc}) "
+            f"→ UTC: {next_time.isoformat()} / Lokal: {local_next.isoformat()}"
+        )
+
+        # 👇 Asynchrones Callback definieren und registrieren
+        async def _handle_refresh(_):
+            await self.async_request_refresh()
+
         self._unsub_timer = async_track_point_in_time(
-            self.hass, lambda _: self.async_request_refresh(), next_time
+            self.hass, _handle_refresh, next_time
         )
