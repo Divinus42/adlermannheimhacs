@@ -21,6 +21,11 @@ GOAL_SENSOR_TYPES = [
     "current_goals_total",
 ]
 
+# --- Neue Sensoren für Adler-Tor-Alert ---
+ALERT_SENSOR_TYPES = [
+    "adler_goal_alert",  # Meldung bei neuem Adler-Tor
+]
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Adler Mannheim sensors."""
@@ -35,6 +40,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # Goal-Sensoren nur für laufendes Spiel
     for sensor_type in GOAL_SENSOR_TYPES:
         sensors.append(AdlerMannheimGoalSensor(coordinator, sensor_type))
+
+    # Neue Alert-Sensoren
+    for sensor_type in ALERT_SENSOR_TYPES:
+        sensors.append(AdlerMannheimGoalAlertSensor(coordinator, sensor_type))
 
     async_add_entities(sensors, True)
 
@@ -149,4 +158,45 @@ class AdlerMannheimGoalSensor(CoordinatorEntity, SensorEntity):
         return {
             "adler_is_home": adler_is_home,
             "goals": goals,
+        }
+
+
+# ----- NEU: Sensor für direkte Tor-Alerts -----
+class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
+    """Sensor für sofortige Meldung bei neuem Adler-Tor."""
+
+    def __init__(self, coordinator, sensor_type):
+        super().__init__(coordinator)
+        self._sensor_type = sensor_type
+        self._attr_name = f"Adler Mannheim {sensor_type.replace('_', ' ').title()}"
+        self._attr_unique_id = f"adler_mannheim_{sensor_type}"
+        self._last_total_goals = 0  # für Tor-Detection
+
+    @property
+    def state(self):
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return None
+
+        adler_is_home = game.get("homeclubid") == ADLER_CLUB_ID
+        goals_home = game.get("homescore", 0) if adler_is_home else 0
+        goals_away = game.get("awayscore", 0) if not adler_is_home else 0
+        total_adler_goals = goals_home + goals_away
+
+        if total_adler_goals > self._last_total_goals:
+            self._last_total_goals = total_adler_goals
+            return f"Neues Adler-Tor! Gesamt: {total_adler_goals}"
+
+        return None
+
+    @property
+    def extra_state_attributes(self):
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return None
+        return {
+            "game_id": game.get("id"),
+            "home_team": game.get("hometeam"),
+            "away_team": game.get("awayteam"),
+            "status": game.get("status"),
         }
