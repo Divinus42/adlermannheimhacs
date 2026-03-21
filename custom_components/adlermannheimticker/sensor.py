@@ -1,202 +1,257 @@
-from datetime import datetime
+"""Sensor entities for the Adler Mannheim integration."""
+
+from __future__ import annotations
+
 import logging
+from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import ADLER_CLUB_ID, BASE_URL, DOMAIN
+from .coordinator import AdlerMannheimCoordinator, format_scorer
+
+_LOGO_BASE = BASE_URL.rsplit("/jsonapi", 1)[0]  # https://www.adler-mannheim.de
 
 _LOGGER = logging.getLogger(__name__)
 
-ADLER_CLUB_ID = 6  # Adler Mannheim Club ID
 
-# Liste der Sensoren, die wir erstellen wollen
-SENSOR_TYPES = [
-    "last_game",
-    "current_game",
-    "next_game",
-]
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Adler Mannheim sensors."""
+    coordinator: AdlerMannheimCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-GOAL_SENSOR_TYPES = [
-    "current_goals_home",
-    "current_goals_away",
-    "current_goals_total",
-]
-
-# --- Neue Sensoren für Adler-Tor-Alert ---
-ALERT_SENSOR_TYPES = [
-    "adler_goal_alert",  # Meldung bei neuem Adler-Tor
-]
+    async_add_entities([
+        AdlerMannheimGameSensor(coordinator, "last_game", "Letztes Spiel"),
+        AdlerMannheimGameSensor(coordinator, "current_game", "Aktuelles Spiel"),
+        AdlerMannheimGameSensor(coordinator, "next_game", "Nächstes Spiel"),
+        AdlerMannheimGoalsSensor(coordinator, "adler_goals", "Adler Tore", is_adler=True),
+        AdlerMannheimGoalsSensor(coordinator, "opponent_goals", "Gegner Tore", is_adler=False),
+    ])
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up the Adler Mannheim sensors."""
-    coordinator = hass.data["adlermannheim"][entry.entry_id]
-
-    sensors = []
-
-    # Normale Spiel-Sensoren
-    for sensor_type in SENSOR_TYPES:
-        sensors.append(AdlerMannheimSensor(coordinator, sensor_type))
-
-    # Goal-Sensoren nur für laufendes Spiel
-    for sensor_type in GOAL_SENSOR_TYPES:
-        sensors.append(AdlerMannheimGoalSensor(coordinator, sensor_type))
-
-    # Neue Alert-Sensoren
-    for sensor_type in ALERT_SENSOR_TYPES:
-        sensors.append(AdlerMannheimGoalAlertSensor(coordinator, sensor_type))
-
-    async_add_entities(sensors, True)
+def _is_adler_home(game: dict) -> bool:
+    """Check if Adler Mannheim is the home team."""
+    if game.get("homeclubid") == ADLER_CLUB_ID:
+        return True
+    # Fallback to team name
+    return "Adler" in (game.get("hometeam") or "")
 
 
-class AdlerMannheimSensor(CoordinatorEntity, SensorEntity):
-    """Representation of an Adler Mannheim game sensor."""
+def _get_device_info() -> DeviceInfo:
+    """Return shared device info for all sensors."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, "adler_mannheim")},
+        name="Adler Mannheim",
+        manufacturer="Adler Mannheim",
+        model="Liveticker",
+    )
 
-    def __init__(self, coordinator, sensor_type):
+
+def _parse_matchstart(matchstart: str | None) -> str | None:
+    """Parse matchstart string to formatted date string."""
+    if not matchstart:
+        return None
+    try:
+        dt = datetime.strptime(matchstart, "%Y-%m-%d %H:%M:%S %z")
+        return dt.strftime("%d.%m. %H:%M")
+    except (ValueError, TypeError):
+        return matchstart
+
+
+class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing game information (last, current, or next game)."""
+
+    def __init__(
+        self,
+        coordinator: AdlerMannheimCoordinator,
+        key: str,
+        name: str,
+    ) -> None:
         super().__init__(coordinator)
-        self._sensor_type = sensor_type
-        self._attr_name = f"Adler Mannheim {sensor_type.replace('_', ' ').title()}"
-        self._attr_unique_id = f"adler_mannheim_{sensor_type}"
+        self._key = key
+        self._attr_name = f"Adler Mannheim {name}"
+        self._attr_unique_id = f"adler_mannheim_{key}"
+        self._attr_icon = "mdi:hockey-puck"
+        self._attr_device_info = _get_device_info()
 
     @property
-    def state(self):
-        """Return the state of the sensor."""
-        game = self.coordinator.data.get(self._sensor_type)
-        if not game:
+    def native_value(self) -> str | None:
+        """Return a descriptive game state."""
+        if not self.coordinator.data:
             return None
-        return game.get("status")
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes."""
-        game = self.coordinator.data.get(self._sensor_type)
+        game = self.coordinator.data.get(self._key)
         if not game:
             return None
 
-        home_team = game.get("hometeam", {})
-        away_team = game.get("awayteam", {})
+        status = game.get("status", "")
+        home_score = game.get("homescore", 0)
+        away_score = game.get("awayscore", 0)
 
-        if game.get("homeclubid") == ADLER_CLUB_ID:
-            opponent = game.get("awayteam")
-            is_home = True
-        else:
-            opponent = game.get("hometeam")
-            is_home = False
+        if status == "LIVE":
+            return f"LIVE {home_score}:{away_score}"
+        if status == "FINAL":
+            return f"{home_score}:{away_score}"
+        if status == "FUTURE":
+            return _parse_matchstart(game.get("matchstart"))
 
-        match_time = None
-        if game.get("matchstart"):
-            try:
-                match_time = datetime.fromisoformat(game["matchstart"])
-            except Exception:
-                match_time = game.get("matchstart")
+        return status
 
-        return {
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Return detailed game attributes."""
+        if not self.coordinator.data:
+            return None
+        game = self.coordinator.data.get(self._key)
+        if not game:
+            return None
+
+        adler_is_home = _is_adler_home(game)
+        opponent = game.get("awayteam") if adler_is_home else game.get("hometeam")
+
+        # Build full logo URLs
+        home_logo_path = game.get("homelogourl")
+        away_logo_path = game.get("awaylogourl")
+
+        attrs = {
             "game_id": game.get("id"),
-            "home_team": home_team,
-            "away_team": away_team,
-            "opponent": opponent,
-            "is_home": is_home,
-            "score_home": game.get("homescore"),
-            "score_away": game.get("awayscore"),
-            "match_start": match_time,
             "status": game.get("status"),
-        }
-
-
-class AdlerMannheimGoalSensor(CoordinatorEntity, SensorEntity):
-    """Sensor für Tore im aktuellen Spiel."""
-
-    def __init__(self, coordinator, sensor_type):
-        super().__init__(coordinator)
-        self._sensor_type = sensor_type
-        self._attr_name = f"Adler Mannheim {sensor_type.replace('_', ' ').title()}"
-        self._attr_unique_id = f"adler_mannheim_{sensor_type}"
-
-    @property
-    def state(self):
-        """Return the number of goals."""
-        game = self.coordinator.data.get("current_game")
-        if not game:
-            return None
-
-        home_goals = game.get("homescore", 0) or 0
-        away_goals = game.get("awayscore", 0) or 0
-
-        if self._sensor_type == "current_goals_home":
-            return home_goals
-        elif self._sensor_type == "current_goals_away":
-            return away_goals
-        elif self._sensor_type == "current_goals_total":
-            return home_goals + away_goals
-        return None
-
-    @property
-    def extra_state_attributes(self):
-        """Zusatzinfos: Tore + Flag, ob Adler-Tor."""
-        game = self.coordinator.data.get("current_game")
-        if not game:
-            return None
-
-        goals = []
-        adler_is_home = game.get("homeclubid") == ADLER_CLUB_ID
-
-        for goal in game.get("goals", []):
-            scoring_team_id = goal.get("clubid")
-            is_adler_goal = (
-                adler_is_home and scoring_team_id == game.get("homeclubid")
-            ) or (not adler_is_home and scoring_team_id == game.get("awayclubid"))
-
-            goals.append(
-                {
-                    "time": goal.get("time"),
-                    "scorer": goal.get("scorer"),
-                    "assists": goal.get("assists", []),
-                    "team": "Adler Mannheim" if is_adler_goal else "Opponent",
-                    "is_adler_goal": is_adler_goal,
-                }
-            )
-
-        return {
-            "adler_is_home": adler_is_home,
-            "goals": goals,
-        }
-
-
-# ----- NEU: Sensor für direkte Tor-Alerts -----
-class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
-    """Sensor für sofortige Meldung bei neuem Adler-Tor."""
-
-    def __init__(self, coordinator, sensor_type):
-        super().__init__(coordinator)
-        self._sensor_type = sensor_type
-        self._attr_name = f"Adler Mannheim {sensor_type.replace('_', ' ').title()}"
-        self._attr_unique_id = f"adler_mannheim_{sensor_type}"
-        self._last_total_goals = 0  # für Tor-Detection
-
-    @property
-    def state(self):
-        game = self.coordinator.data.get("current_game")
-        if not game:
-            return None
-
-        adler_is_home = game.get("homeclubid") == ADLER_CLUB_ID
-        goals_home = game.get("homescore", 0) if adler_is_home else 0
-        goals_away = game.get("awayscore", 0) if not adler_is_home else 0
-        total_adler_goals = goals_home + goals_away
-
-        if total_adler_goals > self._last_total_goals:
-            self._last_total_goals = total_adler_goals
-            return f"Neues Adler-Tor! Gesamt: {total_adler_goals}"
-
-        return None
-
-    @property
-    def extra_state_attributes(self):
-        game = self.coordinator.data.get("current_game")
-        if not game:
-            return None
-        return {
-            "game_id": game.get("id"),
             "home_team": game.get("hometeam"),
             "away_team": game.get("awayteam"),
-            "status": game.get("status"),
+            "home_team_short": game.get("hometeam_short"),
+            "away_team_short": game.get("awayteam_short"),
+            "opponent": opponent,
+            "is_home": adler_is_home,
+            "score_home": game.get("homescore"),
+            "score_away": game.get("awayscore"),
+            "match_start": game.get("matchstart"),
+            "competition": game.get("competitiontype"),
+            "home_logo": f"{_LOGO_BASE}{home_logo_path}" if home_logo_path else None,
+            "away_logo": f"{_LOGO_BASE}{away_logo_path}" if away_logo_path else None,
+        }
+
+        # Period scores (from detail endpoint)
+        for period in (1, 2, 3):
+            h = game.get(f"home_goals_period{period}")
+            a = game.get(f"away_goals_period{period}")
+            if h is not None:
+                attrs[f"period_{period}"] = f"{h}:{a}"
+
+        ot_h = game.get("home_goals_overtime")
+        ot_a = game.get("away_goals_overtime")
+        if ot_h is not None and ot_a is not None and (ot_h > 0 or ot_a > 0):
+            attrs["overtime"] = f"{ot_h}:{ot_a}"
+
+        so_h = game.get("home_goals_shootout")
+        so_a = game.get("away_goals_shootout")
+        if so_h is not None and so_a is not None and (so_h > 0 or so_a > 0):
+            attrs["shootout"] = f"{so_h}:{so_a}"
+
+        # Goals list (from detail endpoint)
+        goals = game.get("goals", [])
+        if goals:
+            attrs["goals"] = [
+                {
+                    "period": g.get("period"),
+                    "time": g.get("time"),
+                    "type": g.get("goaltype"),
+                    "scorer": format_scorer(g.get("scorer", {})),
+                    "assist1": format_scorer(g.get("assist1", {})),
+                    "assist2": format_scorer(g.get("assist2", {})),
+                }
+                for g in goals
+            ]
+
+        # Penalties (from detail endpoint)
+        penalties = game.get("penalties", [])
+        if penalties:
+            attrs["penalties"] = [
+                {
+                    "period": p.get("period"),
+                    "time": p.get("time"),
+                    "player": format_scorer(p.get("player", {})),
+                    "infraction": p.get("infraction"),
+                    "minutes": p.get("penaltytime"),
+                }
+                for p in penalties
+            ]
+
+        return attrs
+
+
+class AdlerMannheimGoalsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing goal count for Adler or opponent in the current game."""
+
+    def __init__(
+        self,
+        coordinator: AdlerMannheimCoordinator,
+        key: str,
+        name: str,
+        *,
+        is_adler: bool,
+    ) -> None:
+        super().__init__(coordinator)
+        self._is_adler = is_adler
+        self._attr_name = f"Adler Mannheim {name}"
+        self._attr_unique_id = f"adler_mannheim_{key}"
+        self._attr_icon = "mdi:hockey-puck"
+        self._attr_device_info = _get_device_info()
+
+    @property
+    def native_value(self) -> int:
+        """Return the goal count."""
+        if not self.coordinator.data:
+            return 0
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return 0
+
+        adler_is_home = _is_adler_home(game)
+        home_score = game.get("homescore", 0) or 0
+        away_score = game.get("awayscore", 0) or 0
+
+        if self._is_adler:
+            return home_score if adler_is_home else away_score
+        return away_score if adler_is_home else home_score
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Return goal details for Adler or opponent goals."""
+        if not self.coordinator.data:
+            return None
+        game = self.coordinator.data.get("current_game")
+        if not game:
+            return None
+
+        adler_is_home = _is_adler_home(game)
+        adler_logoid = (
+            game.get("homelogoid") if adler_is_home else game.get("awaylogoid")
+        )
+
+        goals = []
+        for g in game.get("goals", []):
+            is_adler_goal = (
+                g.get("teamlogoid") == adler_logoid if adler_logoid else False
+            )
+            if is_adler_goal == self._is_adler:
+                goals.append({
+                    "period": g.get("period"),
+                    "time": g.get("time"),
+                    "type": g.get("goaltype"),
+                    "scorer": format_scorer(g.get("scorer", {})),
+                    "assist1": format_scorer(g.get("assist1", {})),
+                    "assist2": format_scorer(g.get("assist2", {})),
+                })
+
+        return {
+            "goals": goals,
+            "opponent": game.get("awayteam") if adler_is_home else game.get("hometeam"),
+            "game_status": game.get("status"),
         }

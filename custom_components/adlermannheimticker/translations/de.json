@@ -7,7 +7,7 @@
       }
     },
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "Adler Mannheim ist bereits konfiguriert"
     }
   }
 }
