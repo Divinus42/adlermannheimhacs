@@ -6,8 +6,6 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from aiohttp import ClientTimeout
-
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -28,7 +26,11 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_TIMEOUT = ClientTimeout(total=API_TIMEOUT)
+try:
+    from aiohttp import ClientTimeout
+    _TIMEOUT = ClientTimeout(total=API_TIMEOUT)
+except ImportError:
+    _TIMEOUT = None
 
 # Keys to carry from the list endpoint into detail data
 _SUMMARY_KEYS = (
@@ -82,7 +84,8 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
         session = async_get_clientsession(self.hass)
 
         try:
-            async with session.get(BASE_URL, timeout=_TIMEOUT) as resp:
+            kwargs = {"timeout": _TIMEOUT} if _TIMEOUT else {}
+            async with session.get(BASE_URL, **kwargs) as resp:
                 if resp.status != 200:
                     raise UpdateFailed(f"API returned {resp.status}")
                 games = await resp.json()
@@ -115,9 +118,8 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
             if not gid:
                 return summary
             try:
-                async with session.get(
-                    f"{BASE_URL}{gid}", timeout=_TIMEOUT
-                ) as resp:
+                kw = {"timeout": _TIMEOUT} if _TIMEOUT else {}
+                async with session.get(f"{BASE_URL}{gid}", **kw) as resp:
                     if resp.status == 200:
                         detail = await resp.json()
                         # Carry over IDs from list endpoint that detail may lack
