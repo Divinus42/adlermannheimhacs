@@ -76,6 +76,14 @@ def _format_matchstart_local(matchstart: str | None) -> str | None:
     return local_dt.strftime("%d.%m. %H:%M")
 
 
+def _matchstart_iso(matchstart: str | None) -> str | None:
+    """Return matchstart as ISO string in local timezone (for JS countdown)."""
+    dt = _parse_matchstart(matchstart)
+    if not dt:
+        return None
+    return dt_util.as_local(dt).isoformat()
+
+
 class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing game information (last, current, or next game)."""
 
@@ -142,6 +150,7 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
             "score_home": game.get("homescore"),
             "score_away": game.get("awayscore"),
             "match_start": _format_matchstart_local(game.get("matchstart")),
+            "match_start_iso": _matchstart_iso(game.get("matchstart")),
             "competition": game.get("competitiontype"),
             "home_logo": f"{_LOGO_BASE}{home_logo_path}" if home_logo_path else None,
             "away_logo": f"{_LOGO_BASE}{away_logo_path}" if away_logo_path else None,

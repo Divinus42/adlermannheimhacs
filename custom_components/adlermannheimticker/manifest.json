@@ -1,10 +1,10 @@
 {
   "domain": "adlermannheim",
   "name": "Adler Mannheim",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "codeowners": ["@divinus42"],
   "config_flow": true,
-  "dependencies": ["http"],
+  "dependencies": [],
   "documentation": "https://github.com/divinus42/adlermannheimhacs",
   "iot_class": "cloud_polling",
   "requirements": []

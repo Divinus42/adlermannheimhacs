@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -14,37 +15,40 @@ from .coordinator import AdlerMannheimCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
-CARD_DIR = Path(__file__).parent / "www"
+
+CARD_SOURCE = Path(__file__).parent / "www" / "scoreboard-card.js"
+CARD_FILENAME = "adler-mannheim-scoreboard.js"
 
 
-async def _register_card(hass: HomeAssistant) -> None:
-    """Register the scoreboard card static files. Best-effort, never blocks setup."""
-    url = f"/{DOMAIN}/www"
-    path = str(CARD_DIR)
+def _install_card(hass: HomeAssistant) -> None:
+    """Copy the scoreboard card JS to /config/www/ so it's available at /local/."""
+    www_dir = Path(hass.config.path("www"))
+    www_dir.mkdir(exist_ok=True)
 
-    try:
-        from homeassistant.components.http import StaticPathConfig
+    target = www_dir / CARD_FILENAME
 
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(url, path, False)]
-        )
-        _LOGGER.debug("Scoreboard card registered at %s", url)
-    except Exception:  # noqa: BLE001
-        _LOGGER.warning(
-            "Could not auto-register scoreboard card. "
-            "Add it manually as a Lovelace resource: %s/scoreboard-card.js",
-            url,
-        )
+    # Always overwrite to ensure the latest version is deployed
+    shutil.copy2(str(CARD_SOURCE), str(target))
+    _LOGGER.info(
+        "Scoreboard card installed: /local/%s",
+        CARD_FILENAME,
+    )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Adler Mannheim from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    # Register static path for the frontend scoreboard card (once)
-    if "frontend_registered" not in hass.data[DOMAIN]:
-        await _register_card(hass)
-        hass.data[DOMAIN]["frontend_registered"] = True
+    # Install/update the scoreboard card JS file (once per HA start)
+    if "card_installed" not in hass.data[DOMAIN]:
+        try:
+            await hass.async_add_executor_job(_install_card, hass)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "Could not auto-install scoreboard card. "
+                "Copy scoreboard-card.js manually to /config/www/"
+            )
+        hass.data[DOMAIN]["card_installed"] = True
 
     coordinator = AdlerMannheimCoordinator(hass)
     await coordinator.async_config_entry_first_refresh()

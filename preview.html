@@ -6,58 +6,41 @@
   <title>Adler Mannheim Videowürfel — Preview</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #1a1a1a;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 24px 16px;
-      gap: 24px;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      color: #ccc;
-    }
-    h1 { font-size: 12px; letter-spacing: 4px; text-transform: uppercase; color: #555; }
-    .card-container { width: 100%; max-width: 420px; }
+    body { background: #1a1a1a; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 24px 16px; gap: 20px; font-family: system-ui; color: #ccc; }
+    h1 { font-size: 11px; letter-spacing: 4px; text-transform: uppercase; color: #555; }
+    .card-container { width: 100%; max-width: 440px; }
     .buttons { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
-    .buttons button {
-      background: #222; color: #999; border: 1px solid #333; border-radius: 6px;
-      padding: 6px 12px; font-size: 10px; font-weight: 700; cursor: pointer;
-      letter-spacing: 1px; text-transform: uppercase; transition: all 0.15s;
-    }
+    .buttons button { background: #222; color: #999; border: 1px solid #333; border-radius: 6px; padding: 6px 12px; font-size: 10px; font-weight: 700; cursor: pointer; letter-spacing: 1px; text-transform: uppercase; }
     .buttons button:hover { background: #CC0000; color: #fff; border-color: #CC0000; }
     .buttons button.active { background: #CC0000; color: #fff; border-color: #ff3333; }
   </style>
 </head>
 <body>
-
-  <h1>SAP Arena Videowürfel — Preview</h1>
-
+  <h1>SAP Arena Videowürfel — Preview v4</h1>
   <div class="buttons">
     <button onclick="showMode('live')" class="active">LIVE</button>
-    <button onclick="showMode('result')">Endergebnis</button>
+    <button onclick="showMode('result')">Ergebnis</button>
     <button onclick="showMode('next')">Nächstes Spiel</button>
     <button onclick="showMode('standby')">Standby</button>
     <button onclick="simulateGoal()">TOR!</button>
   </div>
-
   <div class="card-container" id="container"></div>
 
   <script>
     if (!customElements.get('ha-card')) {
-      class HaCard extends HTMLElement {
-        connectedCallback() {
-          if (!this.shadowRoot) {
-            this.attachShadow({ mode: 'open' });
-            this.shadowRoot.innerHTML = '<style>:host{display:block}</style><slot></slot>';
-          }
-        }
-      }
+      class HaCard extends HTMLElement { connectedCallback() { if (!this.shadowRoot) { this.attachShadow({ mode: 'open' }); this.shadowRoot.innerHTML = '<style>:host{display:block}</style><slot></slot>'; } } }
       customElements.define('ha-card', HaCard);
     }
   </script>
   <script src="custom_components/adlermannheimticker/www/scoreboard-card.js"></script>
   <script>
+    // Future game: 2 days from now at 19:30
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + 2);
+    futureDate.setHours(19, 30, 0, 0);
+    const futureISO = futureDate.toISOString();
+    const futureFmt = `${String(futureDate.getDate()).padStart(2,'0')}.${String(futureDate.getMonth()+1).padStart(2,'0')}. 19:30`;
+
     const MOCK_LIVE = {
       state: 'LIVE 3:1',
       attributes: {
@@ -65,7 +48,7 @@
         home_team: 'Adler Mannheim', away_team: 'Fischtown Pinguins',
         home_team_short: 'MAN', away_team_short: 'BHV',
         score_home: 3, score_away: 1,
-        match_start: '25.03. 20:00',
+        match_start: '25.03. 20:00', match_start_iso: new Date().toISOString(),
         period_1: '1:0', period_2: '2:1',
         goals: [
           { period: 1, time: '08:23', type: 'ES', scorer: 'Justin Schütz', assist1: 'Marc Michaelis', assist2: 'Nigel Dawes' },
@@ -82,26 +65,28 @@
         status: 'FINAL', competition: 'DEL',
         home_team: 'Adler Mannheim', away_team: 'Straubing Tigers',
         home_team_short: 'MAN', away_team_short: 'STR',
+        opponent: 'Straubing Tigers', is_home: true,
         score_home: 4, score_away: 0,
         match_start: '20.03. 19:30',
         period_1: '1:0', period_2: '1:0', period_3: '2:0',
         goals: [
-          { period: 1, time: '00:08', type: 'ES', scorer: 'Justin Schütz' },
-          { period: 2, time: '25:30', type: 'ES', scorer: 'Kris Bennett', assist1: 'Zach Solow' },
-          { period: 3, time: '46:12', type: 'PP', scorer: 'Nigel Dawes', assist1: 'Marc Michaelis' },
-          { period: 3, time: '58:27', type: 'EN', scorer: 'Kris Bennett', assist1: 'Zach Solow' },
+          { period: 1, time: '00:08', type: 'ES', scorer: 'Justin Schütz', assist1: null, assist2: null },
+          { period: 2, time: '25:30', type: 'ES', scorer: 'Kris Bennett', assist1: 'Zach Solow', assist2: null },
+          { period: 3, time: '46:12', type: 'PP', scorer: 'Nigel Dawes', assist1: 'Marc Michaelis', assist2: null },
+          { period: 3, time: '58:27', type: 'EN', scorer: 'Kris Bennett', assist1: 'Zach Solow', assist2: null },
         ],
       },
     };
 
     const MOCK_NEXT = {
-      state: '28.03. 19:30',
+      state: futureFmt,
       attributes: {
         status: 'FUTURE', competition: 'PO',
         home_team: 'Fischtown Pinguins', away_team: 'Adler Mannheim',
         home_team_short: 'BHV', away_team_short: 'MAN',
+        opponent: 'Fischtown Pinguins', is_home: false,
         score_home: 0, score_away: 0,
-        match_start: '28.03. 19:30',
+        match_start: futureFmt, match_start_iso: futureISO,
       },
     };
 
@@ -111,18 +96,15 @@
     function buildHass(mode) {
       const s = {};
       const none = { state: 'None', attributes: {} };
+      s['sensor.adler_mannheim_nachstes_spiel'] = MOCK_NEXT;
+      s['sensor.adler_mannheim_letztes_spiel'] = MOCK_RESULT;
       if (mode === 'live') {
         s['sensor.adler_mannheim_aktuelles_spiel'] = MOCK_LIVE;
-        s['sensor.adler_mannheim_nachstes_spiel'] = none;
-        s['sensor.adler_mannheim_letztes_spiel'] = MOCK_RESULT;
       } else if (mode === 'result') {
         s['sensor.adler_mannheim_aktuelles_spiel'] = none;
-        s['sensor.adler_mannheim_nachstes_spiel'] = MOCK_NEXT;
-        s['sensor.adler_mannheim_letztes_spiel'] = MOCK_RESULT;
       } else if (mode === 'next') {
         s['sensor.adler_mannheim_aktuelles_spiel'] = none;
-        s['sensor.adler_mannheim_nachstes_spiel'] = MOCK_NEXT;
-        s['sensor.adler_mannheim_letztes_spiel'] = MOCK_RESULT;
+        s['sensor.adler_mannheim_letztes_spiel'] = none;
       } else {
         s['sensor.adler_mannheim_aktuelles_spiel'] = none;
         s['sensor.adler_mannheim_nachstes_spiel'] = none;
@@ -132,8 +114,7 @@
     }
 
     function showMode(mode) {
-      currentMode = mode;
-      goalCount = 3;
+      currentMode = mode; goalCount = 3;
       document.querySelectorAll('.buttons button').forEach(b => b.classList.remove('active'));
       event.target.classList.add('active');
       renderCard();
@@ -143,27 +124,14 @@
       { scorer: 'Marc Michaelis', assist1: 'Justin Schütz', assist2: 'Nigel Dawes' },
       { scorer: 'Zach Solow', assist1: 'Kris Bennett', assist2: null },
       { scorer: 'Jordan Szwarz', assist1: 'Yannick Proske', assist2: null },
-      { scorer: 'Lean Bergmann', assist1: null, assist2: null },
     ];
 
     function simulateGoal() {
-      if (currentMode !== 'live') {
-        currentMode = 'live';
-        document.querySelectorAll('.buttons button').forEach(b => b.classList.remove('active'));
-        document.querySelector('.buttons button').classList.add('active');
-      }
+      if (currentMode !== 'live') { currentMode = 'live'; document.querySelectorAll('.buttons button').forEach(b => b.classList.remove('active')); document.querySelector('.buttons button').classList.add('active'); }
       goalCount++;
-      const s = SCORERS[(goalCount - 4) % SCORERS.length];
       MOCK_LIVE.attributes.score_home = goalCount;
-      MOCK_LIVE.attributes.goals.push({
-        period: goalCount <= 5 ? 2 : 3,
-        time: `${40 + goalCount}:${String(Math.floor(Math.random() * 59)).padStart(2, '0')}`,
-        type: 'ES', ...s,
-      });
+      MOCK_LIVE.attributes.goals.push({ period: goalCount <= 5 ? 2 : 3, time: `${40+goalCount}:${String(Math.floor(Math.random()*59)).padStart(2,'0')}`, type: 'ES', ...SCORERS[(goalCount-4)%SCORERS.length] });
       MOCK_LIVE.state = `LIVE ${goalCount}:1`;
-      if (goalCount >= 5 && !MOCK_LIVE.attributes.period_2) {
-        MOCK_LIVE.attributes.period_2 = `${goalCount - 1}:1`;
-      }
       renderCard();
     }
 
