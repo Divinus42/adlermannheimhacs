@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -63,6 +64,14 @@ def _parse_matchstart(matchstart: str | None) -> datetime | None:
         return datetime.strptime(matchstart, "%Y-%m-%d %H:%M:%S %z")
     except (ValueError, TypeError):
         return None
+
+
+def _format_local(matchstart: str | None) -> str | None:
+    """Format a matchstart UTC string in the HA-configured local timezone."""
+    dt = _parse_matchstart(matchstart)
+    if not dt:
+        return matchstart
+    return dt_util.as_local(dt).isoformat()
 
 
 class AdlerMannheimCoordinator(DataUpdateCoordinator):
@@ -219,7 +228,9 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
                         "game_id": game_id,
                         "home_team": current_game.get("hometeam"),
                         "away_team": current_game.get("awayteam"),
-                        "match_start": current_game.get("matchstart"),
+                        "match_start": _format_local(
+                            current_game.get("matchstart")
+                        ),
                     },
                 )
                 _LOGGER.info(

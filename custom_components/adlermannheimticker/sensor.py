@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import ADLER_CLUB_ID, BASE_URL, DOMAIN
 from .coordinator import AdlerMannheimCoordinator, format_scorer
@@ -34,6 +35,7 @@ async def async_setup_entry(
         AdlerMannheimGameSensor(coordinator, "next_game", "Nächstes Spiel"),
         AdlerMannheimGoalsSensor(coordinator, "adler_goals", "Adler Tore", is_adler=True),
         AdlerMannheimGoalsSensor(coordinator, "opponent_goals", "Gegner Tore", is_adler=False),
+        AdlerMannheimGoalAlertSensor(coordinator),
     ])
 
 
@@ -55,15 +57,23 @@ def _get_device_info() -> DeviceInfo:
     )
 
 
-def _parse_matchstart(matchstart: str | None) -> str | None:
-    """Parse matchstart string to formatted date string."""
+def _parse_matchstart(matchstart: str | None) -> datetime | None:
+    """Parse a matchstart UTC string into a timezone-aware datetime."""
     if not matchstart:
         return None
     try:
-        dt = datetime.strptime(matchstart, "%Y-%m-%d %H:%M:%S %z")
-        return dt.strftime("%d.%m. %H:%M")
+        return datetime.strptime(matchstart, "%Y-%m-%d %H:%M:%S %z")
     except (ValueError, TypeError):
+        return None
+
+
+def _format_matchstart_local(matchstart: str | None) -> str | None:
+    """Parse matchstart and format in the user's local timezone."""
+    dt = _parse_matchstart(matchstart)
+    if not dt:
         return matchstart
+    local_dt = dt_util.as_local(dt)
+    return local_dt.strftime("%d.%m. %H:%M")
 
 
 class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
@@ -100,7 +110,7 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
         if status == "FINAL":
             return f"{home_score}:{away_score}"
         if status == "FUTURE":
-            return _parse_matchstart(game.get("matchstart"))
+            return _format_matchstart_local(game.get("matchstart"))
 
         return status
 
@@ -131,7 +141,7 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
             "is_home": adler_is_home,
             "score_home": game.get("homescore"),
             "score_away": game.get("awayscore"),
-            "match_start": game.get("matchstart"),
+            "match_start": _format_matchstart_local(game.get("matchstart")),
             "competition": game.get("competitiontype"),
             "home_logo": f"{_LOGO_BASE}{home_logo_path}" if home_logo_path else None,
             "away_logo": f"{_LOGO_BASE}{away_logo_path}" if away_logo_path else None,
@@ -255,3 +265,110 @@ class AdlerMannheimGoalsSensor(CoordinatorEntity, SensorEntity):
             "opponent": game.get("awayteam") if adler_is_home else game.get("hometeam"),
             "game_status": game.get("status"),
         }
+
+
+class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
+    """Sensor that changes state on every new Adler Mannheim goal.
+
+    Use this sensor as automation trigger:
+      trigger:
+        - platform: state
+          entity_id: sensor.adler_mannheim_tor_alert
+    """
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Tor Alert"
+        self._attr_unique_id = "adler_mannheim_goal_alert"
+        self._attr_icon = "mdi:hockey-puck"
+        self._attr_device_info = _get_device_info()
+        # Track which Adler goals we have already seen
+        self._known_adler_goal_ids: set[int] = set()
+        self._goal_count: int = 0
+        self._last_goal: dict | None = None
+        self._initialized: bool = False
+
+    def _handle_coordinator_update(self) -> None:
+        """Process coordinator data and detect new Adler goals."""
+        game = (
+            self.coordinator.data.get("current_game")
+            if self.coordinator.data
+            else None
+        )
+
+        if not game or game.get("status") != "LIVE":
+            # Game ended or no game — keep last state, don't reset
+            if self._initialized and not game:
+                # No game at all — reset for next game
+                self._known_adler_goal_ids.clear()
+                self._initialized = False
+            self.async_write_ha_state()
+            return
+
+        adler_is_home = _is_adler_home(game)
+        adler_logoid = (
+            game.get("homelogoid") if adler_is_home else game.get("awaylogoid")
+        )
+
+        for g in game.get("goals", []):
+            gid = g.get("id")
+            if not gid or gid in self._known_adler_goal_ids:
+                continue
+
+            # Check if this is an Adler goal
+            is_adler = (
+                g.get("teamlogoid") == adler_logoid if adler_logoid else False
+            )
+            if not is_adler:
+                continue
+
+            self._known_adler_goal_ids.add(gid)
+
+            if self._initialized:
+                # Real new goal detected during game — increment counter
+                self._goal_count += 1
+                self._last_goal = g
+
+        if not self._initialized:
+            # First update: seed with current Adler score, don't trigger
+            self._goal_count = (
+                (game.get("homescore", 0) or 0)
+                if adler_is_home
+                else (game.get("awayscore", 0) or 0)
+            )
+            self._initialized = True
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> int:
+        """Return the Adler goal count. Changes on every new goal."""
+        return self._goal_count
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Return details of the last detected Adler goal."""
+        attrs: dict = {"goals_detected": self._goal_count}
+
+        if self._last_goal:
+            g = self._last_goal
+            attrs["last_scorer"] = format_scorer(g.get("scorer", {}))
+            attrs["last_scorer_jersey"] = (
+                g.get("scorer", {}).get("jersey") if g.get("scorer") else None
+            )
+            attrs["last_time"] = g.get("time")
+            attrs["last_period"] = g.get("period")
+            attrs["last_type"] = g.get("goaltype")
+            attrs["last_assist1"] = format_scorer(g.get("assist1", {}))
+            attrs["last_assist2"] = format_scorer(g.get("assist2", {}))
+
+        if self.coordinator.data:
+            game = self.coordinator.data.get("current_game")
+            if game:
+                attrs["game_status"] = game.get("status")
+                attrs["score_home"] = game.get("homescore")
+                attrs["score_away"] = game.get("awayscore")
+                attrs["home_team"] = game.get("hometeam")
+                attrs["away_team"] = game.get("awayteam")
+
+        return attrs

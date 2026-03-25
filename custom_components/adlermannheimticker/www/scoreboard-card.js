@@ -1,4 +1,4 @@
-const CARD_VERSION = '1.0.0';
+const CARD_VERSION = '3.0.0';
 
 class AdlerMannheimScoreboard extends HTMLElement {
   constructor() {
@@ -20,7 +20,6 @@ class AdlerMannheimScoreboard extends HTMLElement {
   set hass(hass) {
     const prev = this._hass;
     this._hass = hass;
-
     const ids = [this._config.entity, this._config.entity_next, this._config.entity_last];
     const changed = !prev || ids.some(id => {
       const o = prev.states[id];
@@ -29,19 +28,12 @@ class AdlerMannheimScoreboard extends HTMLElement {
       if (!o || !n) return true;
       return o.state !== n.state || JSON.stringify(o.attributes) !== JSON.stringify(n.attributes);
     });
-
     if (changed) this._render();
   }
 
-  getCardSize() {
-    return 4;
-  }
+  getCardSize() { return 5; }
+  static getStubConfig() { return { entity: 'sensor.adler_mannheim_aktuelles_spiel' }; }
 
-  static getStubConfig() {
-    return { entity: 'sensor.adler_mannheim_aktuelles_spiel' };
-  }
-
-  /* ── Find the best entity to display ── */
   _getGameData() {
     const tryEntity = (id, forceMode) => {
       const s = this._hass.states[id];
@@ -50,7 +42,6 @@ class AdlerMannheimScoreboard extends HTMLElement {
       const mode = forceMode || (status === 'LIVE' ? 'live' : status === 'FUTURE' ? 'next' : 'result');
       return { state: s, mode };
     };
-
     return (
       tryEntity(this._config.entity) ||
       tryEntity(this._config.entity_next, 'next') ||
@@ -58,11 +49,9 @@ class AdlerMannheimScoreboard extends HTMLElement {
     );
   }
 
-  /* ── Main render ── */
   _render() {
     if (!this._hass) return;
     const data = this._getGameData();
-
     this.shadowRoot.innerHTML = `
       <ha-card>
         <style>${STYLES}</style>
@@ -74,11 +63,13 @@ class AdlerMannheimScoreboard extends HTMLElement {
 
   _renderStandby() {
     return `
-      <div class="frame standby">
-        <div class="top-strip"></div>
-        <div class="header">SAP ARENA MANNHEIM</div>
-        <div class="standby-msg">KEINE SPIELDATEN</div>
-        <div class="bot-strip"></div>
+      <div class="screen standby">
+        <div class="panel">
+          <div class="standby-text">KEINE SPIELDATEN</div>
+        </div>
+        <div class="led-ring">
+          <span class="led-text">ADLER MANNHEIM.DE</span>
+        </div>
       </div>`;
   }
 
@@ -88,123 +79,158 @@ class AdlerMannheimScoreboard extends HTMLElement {
     const isNext = mode === 'next';
     const homeScore = a.score_home ?? 0;
     const awayScore = a.score_away ?? 0;
+    const homeShort = (a.home_team_short || (a.home_team || '???').substring(0, 3)).toUpperCase();
+    const awayShort = (a.away_team_short || (a.away_team || '???').substring(0, 3)).toUpperCase();
+
+    // Current period
+    let currentPeriod = 1;
+    if (a.period_3) currentPeriod = 3;
+    else if (a.period_2) currentPeriod = 3;
+    else if (a.period_1) currentPeriod = 2;
+    if (a.overtime) currentPeriod = 4;
+    if (isLive && a.goals && a.goals.length > 0) {
+      const lp = a.goals[a.goals.length - 1].period;
+      if (lp && lp > currentPeriod) currentPeriod = lp;
+    }
+
+    // Parse period scores into [home, away] per period
+    const pScores = [];
+    for (let i = 1; i <= 3; i++) {
+      const p = a[`period_${i}`];
+      if (p) {
+        const [h, aw] = p.split(':').map(Number);
+        pScores.push([h, aw]);
+      } else {
+        pScores.push(null);
+      }
+    }
+    let hasOT = false;
+    if (a.overtime) {
+      const [h, aw] = a.overtime.split(':').map(Number);
+      pScores.push([h, aw]);
+      hasOT = true;
+    }
 
     return `
-      <div class="frame ${mode}">
-        <div class="top-strip"></div>
+      <div class="screen ${mode}">
+        <div class="panel">
 
-        <!-- Header -->
-        <div class="header">
-          <span class="arena">SAP ARENA</span>
-          ${a.competition ? `<span class="comp">${a.competition}</span>` : ''}
-        </div>
-
-        <!-- Status -->
-        ${this._renderStatus(mode)}
-
-        <!-- Score area -->
-        <div class="score-area">
-          ${this._renderTeam(a.home_team, a.home_team_short, a.home_logo, 'home')}
-
-          <div class="center">
-            ${isNext
-              ? `<div class="vs">VS</div><div class="kickoff">${state.state || ''}</div>`
-              : `<div class="digits">
-                   <span class="num">${homeScore}</span>
-                   <span class="colon ${isLive ? 'blink' : ''}">:</span>
-                   <span class="num">${awayScore}</span>
-                 </div>`
-            }
+          <!-- Row 1: STRAFZEIT + Clock + STRAFZEIT -->
+          <div class="row-top">
+            <div class="straf-col">
+              <div class="straf-title">STRAFZEIT</div>
+              <div class="straf-box"></div>
+            </div>
+            <div class="clock-col">
+              <div class="team-row">
+                <span class="team-name home-c">${homeShort}</span>
+                <span class="clock">${isLive ? '20:00' : isNext ? (state.state || '') : 'ENDE'}</span>
+                <span class="team-name away-c">${awayShort}</span>
+              </div>
+            </div>
+            <div class="straf-col">
+              <div class="straf-title">STRAFZEIT</div>
+              <div class="straf-box"></div>
+            </div>
           </div>
 
-          ${this._renderTeam(a.away_team, a.away_team_short, a.away_logo, 'away')}
+          <!-- Row 2: Period blocks + Score + Period blocks -->
+          <div class="row-score">
+
+            <!-- Home period blocks (BLUE) -->
+            <div class="pblocks-col">
+              ${this._renderBlocks(pScores, 0)}
+            </div>
+
+            <!-- Center score -->
+            <div class="score-col">
+              ${isNext
+                ? `<div class="future-display">
+                     <div class="future-vs">VS</div>
+                   </div>`
+                : `<div class="score-display">
+                     <span class="score-digit">${homeScore}</span>
+                     <span class="period-circle ${isLive ? 'active' : ''}">${hasOT ? 'V' : currentPeriod}</span>
+                     <span class="score-digit">${awayScore}</span>
+                   </div>`
+              }
+            </div>
+
+            <!-- Away period blocks (RED) -->
+            <div class="pblocks-col">
+              ${this._renderBlocks(pScores, 1)}
+            </div>
+
+          </div>
+
+          <!-- Goal ticker -->
+          ${isLive ? this._renderGoalTicker(a) : ''}
+
         </div>
 
-        <!-- Period scores -->
-        ${this._renderPeriods(a)}
-
-        <!-- Last goal ticker -->
-        ${isLive ? this._renderLastGoal(a) : ''}
-
-        <div class="bot-strip"></div>
+        <!-- Red LED ring -->
+        <div class="led-ring ${isLive ? 'glow' : ''}">
+          <span class="led-text">ADLER MANNHEIM.DE</span>
+        </div>
       </div>`;
   }
 
-  _renderStatus(mode) {
-    if (mode === 'live')
-      return `<div class="badge live-badge"><span class="dot"></span>LIVE</div>`;
-    if (mode === 'next')
-      return `<div class="badge dim">NÄCHSTES SPIEL</div>`;
-    return `<div class="badge dim">ENDERGEBNIS</div>`;
-  }
-
-  _renderTeam(name, short, logo, side) {
-    const abbr = (short || (name || '???').substring(0, 3)).toUpperCase();
-    const logoHtml = logo
-      ? `<img class="logo" src="${logo}" alt="${name}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
-         <div class="logo-fb" style="display:none">${abbr}</div>`
-      : `<div class="logo-fb">${abbr}</div>`;
-
-    return `
-      <div class="team ${side}">
-        <div class="logo-wrap">${logoHtml}</div>
-        <div class="tname">${name || '???'}</div>
-      </div>`;
-  }
-
-  _renderPeriods(a) {
-    const parts = [];
-    for (let i = 1; i <= 3; i++) {
-      if (a[`period_${i}`]) parts.push({ l: `${i}. D`, v: a[`period_${i}`] });
+  /**
+   * Render 3 (or 4) period block rows.
+   * Each block shows one digit (home=index 0, away=index 1).
+   * Home blocks are blue, away blocks are red.
+   * @param {Array} pScores - [[homeScore, awayScore], ...] per period
+   * @param {number} teamIdx - 0 for home, 1 for away
+   */
+  _renderBlocks(pScores, teamIdx) {
+    const side = teamIdx === 0 ? 'home' : 'away';
+    let html = '';
+    const count = Math.max(pScores.length, 3);
+    for (let i = 0; i < count && i < 4; i++) {
+      const p = pScores[i];
+      const val = p ? p[teamIdx] : null;
+      const on = p !== null;
+      html += `
+        <div class="led-block ${side} ${on ? 'on' : 'off'}">
+          <span class="led-val">${val !== null ? val : ''}</span>
+        </div>`;
     }
-    if (a.overtime) parts.push({ l: 'OT', v: a.overtime });
-    if (a.shootout) parts.push({ l: 'SO', v: a.shootout });
-    if (!parts.length) return '';
-
-    return `
-      <div class="periods">
-        ${parts.map(p => `
-          <div class="pd">
-            <span class="pd-v">${p.v}</span>
-            <span class="pd-l">${p.l}</span>
-          </div>`).join('<div class="pd-div"></div>')}
-      </div>`;
+    return html;
   }
 
-  _renderLastGoal(a) {
+  _renderGoalTicker(a) {
     const goals = a.goals;
     if (!goals || !goals.length) return '';
     const g = goals[goals.length - 1];
     if (!g.scorer) return '';
     const assists = [g.assist1, g.assist2].filter(Boolean).join(', ');
-
     return `
       <div class="ticker">
-        <span class="siren">🚨</span>
-        <span class="ticker-txt">
-          <strong>${g.scorer}</strong>${assists ? ` &middot; ${assists}` : ''}
-          <span class="ticker-time">${g.time || ''} ${g.type ? `(${g.type})` : ''}</span>
-        </span>
+        <span class="ticker-siren">&#x1F6A8;</span>
+        <strong>${g.scorer}</strong>${assists ? ` · ${assists}` : ''}
+        <span class="ticker-time">${g.time || ''}</span>
       </div>`;
   }
 }
 
-/* ═══════════════════════════════════════════════
-   CSS — SAP Arena Videowürfel aesthetic
-   ═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════
+   CSS — SAP Arena Videowürfel replica v3
+   Matched to the actual cube photo
+   ═══════════════════════════════════════════════════ */
 const STYLES = `
+  * { box-sizing: border-box; }
+
   :host {
-    --blue:        #00529C;
-    --blue-dark:   #003366;
-    --blue-glow:   rgba(0, 82, 156, 0.55);
-    --bg:          #060a14;
-    --bg-frame:    #0b1024;
-    --bg-subtle:   rgba(255,255,255,0.03);
-    --txt:         #ffffff;
-    --txt2:        rgba(255,255,255,0.52);
-    --txt3:        rgba(255,255,255,0.25);
-    --red:         #ff1744;
-    --border:      #162040;
+    --home:       #0066CC;
+    --home-dim:   #002244;
+    --away:       #CC0000;
+    --away-dim:   #330000;
+    --bg:         #000000;
+    --panel-bg:   #060608;
+    --txt:        #ffffff;
+    --txt-dim:    rgba(255,255,255,0.28);
+    --ring-red:   #BB0000;
+    --ring-dark:  #660000;
   }
 
   ha-card {
@@ -213,307 +239,291 @@ const STYLES = `
     box-shadow: none !important;
   }
 
-  .cube { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+  .cube {
+    font-family: 'Segoe UI', 'Arial Black', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
 
-  /* ── Outer frame ── */
-  .frame {
-    position: relative;
-    background:
-      radial-gradient(ellipse at 50% 0%, rgba(0,82,156,0.07) 0%, transparent 55%),
-      linear-gradient(180deg, #0e1328 0%, var(--bg) 45%, #0e1328 100%);
-    border: 2px solid var(--border);
-    border-radius: 18px;
-    padding: 0 24px 8px;
+  /* ─── Screen frame ─── */
+  .screen {
+    background: #111;
+    border-radius: 8px;
     overflow: hidden;
+    border: 4px solid #1a1a1a;
     box-shadow:
-      0 6px 40px rgba(0,0,0,0.65),
-      inset 0 1px 0 rgba(255,255,255,0.03);
+      0 2px 16px rgba(0,0,0,0.9),
+      inset 0 0 40px rgba(0,0,0,0.8);
   }
 
-  .frame.live {
-    border-color: rgba(0,82,156,0.45);
-    box-shadow:
-      0 6px 40px rgba(0,0,0,0.65),
-      0 0 28px rgba(0,82,156,0.18),
-      inset 0 1px 0 rgba(255,255,255,0.03);
-  }
-
-  .frame.standby { opacity: 0.55; }
-
-  /* ── LED accent strips (top + bottom) ── */
-  .top-strip, .bot-strip {
-    height: 3px;
-    margin: 0 -24px;
-    background: linear-gradient(90deg, transparent 5%, var(--blue) 50%, transparent 95%);
-    opacity: 0.35;
-  }
-  .frame.live .top-strip,
-  .frame.live .bot-strip {
-    opacity: 0.9;
-    animation: pulse-strip 2.2s ease-in-out infinite;
-  }
-  @keyframes pulse-strip { 0%,100%{opacity:.45} 50%{opacity:1} }
-
-  /* ── Header bar ── */
-  .header {
+  /* ─── Main LED panel ─── */
+  .panel {
+    background: var(--bg);
+    padding: 12px 10px 8px;
+    min-height: 170px;
     display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 0 6px;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
-  }
-  .arena {
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 3.5px;
-    color: var(--txt3);
-    text-transform: uppercase;
-  }
-  .comp {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 1.2px;
-    color: var(--blue);
-    background: rgba(0,82,156,0.12);
-    padding: 2px 8px;
-    border-radius: 4px;
+    flex-direction: column;
+    gap: 6px;
   }
 
-  /* ── Status badge ── */
-  .badge {
-    text-align: center;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 2.5px;
-    text-transform: uppercase;
-    padding: 6px 0 2px;
-  }
-  .dim { color: var(--txt2); }
-
-  .live-badge {
-    color: var(--red);
+  /* ─── Row 1: Strafzeit + Clock ─── */
+  .row-top {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-  }
-  .dot {
-    width: 9px; height: 9px;
-    border-radius: 50%;
-    background: var(--red);
-    box-shadow: 0 0 10px var(--red), 0 0 20px rgba(255,23,68,0.35);
-    animation: dot-beat 1.4s ease-in-out infinite;
-  }
-  @keyframes dot-beat {
-    0%,100% { transform: scale(1);   opacity: 1; }
-    50%     { transform: scale(0.75); opacity: 0.45; }
-  }
-
-  /* ── Score area ── */
-  .score-area {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 10px 0 14px;
+    align-items: flex-start;
     gap: 0;
   }
 
-  /* Team column */
-  .team {
+  .straf-col {
+    flex: 0 0 60px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .straf-title {
+    font-size: 7px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    color: var(--txt-dim);
+    text-transform: uppercase;
+  }
+  .straf-box {
+    width: 46px;
+    height: 18px;
+    border-radius: 2px;
+    background: #0a0a0a;
+    border: 1px solid #1a1a1a;
+  }
+
+  .clock-col {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
+  }
+
+  .team-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .team-name {
+    font-size: 14px;
+    font-weight: 900;
+    letter-spacing: 3px;
+    min-width: 46px;
+  }
+  .home-c { color: var(--home); text-align: right; }
+  .away-c { color: var(--away); text-align: left; }
+
+  .clock {
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--txt);
+    letter-spacing: 2px;
+    text-shadow: 0 0 14px rgba(255,255,255,0.3);
+    font-variant-numeric: tabular-nums;
+    min-width: 80px;
+    text-align: center;
+  }
+  .live .clock {
+    text-shadow: 0 0 18px rgba(255,255,255,0.45);
+  }
+
+  /* ─── Row 2: Blocks + Score ─── */
+  .row-score {
+    display: flex;
+    align-items: center;
     gap: 6px;
-    min-width: 0;
-  }
-  .logo-wrap {
-    width: 68px; height: 68px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(255,255,255,0.045) 0%, transparent 72%);
-  }
-  .logo {
-    max-width: 58px; max-height: 58px;
-    object-fit: contain;
-    filter: drop-shadow(0 0 10px rgba(255,255,255,0.12));
-  }
-  .logo-fb {
-    width: 56px; height: 56px;
-    border-radius: 50%;
-    background: var(--bg-frame);
-    border: 2px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 15px;
-    font-weight: 900;
-    color: var(--txt2);
-    letter-spacing: 1px;
-  }
-  .tname {
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--txt2);
-    text-align: center;
-    letter-spacing: 0.4px;
-    max-width: 110px;
-    line-height: 1.25;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    padding: 4px 0;
   }
 
-  /* Center score */
-  .center {
-    flex: 0 0 auto;
+  /* Period block columns */
+  .pblocks-col {
+    flex: 0 0 42px;
     display: flex;
     flex-direction: column;
+    gap: 4px;
     align-items: center;
-    padding: 0 10px;
-    min-width: 130px;
-  }
-  .digits {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-  .num {
-    font-size: 60px;
-    font-weight: 900;
-    color: var(--txt);
-    line-height: 1;
-    min-width: 44px;
-    text-align: center;
-    text-shadow:
-      0 0 22px var(--blue-glow),
-      0 0 44px rgba(0,82,156,0.22);
-  }
-  .frame.live .num {
-    text-shadow:
-      0 0 22px var(--blue-glow),
-      0 0 44px rgba(0,82,156,0.35),
-      0 2px 6px rgba(0,0,0,0.5);
-  }
-  .colon {
-    font-size: 44px;
-    font-weight: 300;
-    color: var(--txt2);
-    line-height: 1;
-    padding-bottom: 6px;
-  }
-  .blink { animation: blink-c 1s step-end infinite; }
-  @keyframes blink-c { 0%,100%{opacity:1} 50%{opacity:.22} }
-
-  .vs {
-    font-size: 30px;
-    font-weight: 900;
-    color: var(--txt3);
-    letter-spacing: 5px;
-  }
-  .kickoff {
-    font-size: 17px;
-    font-weight: 700;
-    color: var(--blue);
-    margin-top: 4px;
-    letter-spacing: 1px;
   }
 
-  /* ── Period bar ── */
-  .periods {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: var(--bg-subtle);
-    border: 1px solid rgba(255,255,255,0.035);
-    border-radius: 10px;
-    padding: 8px 20px;
-    margin-bottom: 6px;
-  }
-  .pd {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 0 18px;
-    gap: 2px;
-  }
-  .pd-v {
-    font-size: 15px;
-    font-weight: 800;
-    color: var(--txt);
-    letter-spacing: 1px;
-  }
-  .pd-l {
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--txt3);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-  }
-  .pd-div {
-    width: 1px;
+  .led-block {
+    width: 38px;
     height: 26px;
-    background: rgba(255,255,255,0.07);
-  }
-
-  /* ── Goal ticker ── */
-  .ticker {
+    border-radius: 3px;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 9px 12px;
-    margin: 4px 0 6px;
-    background: linear-gradient(90deg, transparent 2%, rgba(0,82,156,0.1) 50%, transparent 98%);
-    border-radius: 8px;
-    animation: flash-in 2.5s ease-out;
   }
-  @keyframes flash-in {
-    0%   { background: linear-gradient(90deg, transparent 2%, rgba(0,82,156,0.45) 50%, transparent 98%); }
-    100% { background: linear-gradient(90deg, transparent 2%, rgba(0,82,156,0.1)  50%, transparent 98%); }
+  .led-block.home.on {
+    background: var(--home);
+    box-shadow: 0 0 8px rgba(0,102,204,0.5), inset 0 1px 0 rgba(255,255,255,0.15);
   }
-  .siren { font-size: 16px; }
-  .ticker-txt {
-    font-size: 12px;
+  .led-block.home.off {
+    background: var(--home-dim);
+    border: 1px solid rgba(0,102,204,0.2);
+  }
+  .led-block.away.on {
+    background: var(--away);
+    box-shadow: 0 0 8px rgba(204,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .led-block.away.off {
+    background: var(--away-dim);
+    border: 1px solid rgba(204,0,0,0.2);
+  }
+
+  .led-val {
+    font-size: 16px;
+    font-weight: 900;
+    color: var(--txt);
+    text-shadow: 0 0 4px rgba(255,255,255,0.3);
+  }
+  .led-block.off .led-val {
+    color: rgba(255,255,255,0.1);
+  }
+
+  /* Score center */
+  .score-col {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .score-display {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .score-digit {
+    font-size: 72px;
+    font-weight: 900;
+    color: var(--txt);
+    line-height: 1;
+    min-width: 50px;
+    text-align: center;
+    text-shadow:
+      0 0 18px rgba(255,255,255,0.25),
+      0 0 40px rgba(255,255,255,0.08);
+  }
+  .live .score-digit {
+    text-shadow:
+      0 0 22px rgba(255,255,255,0.35),
+      0 0 50px rgba(255,255,255,0.12);
+  }
+
+  .period-circle {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: #333;
+    border: 2px solid #555;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 900;
+    color: var(--txt);
+    flex-shrink: 0;
+    margin: 0 2px;
+  }
+  .period-circle.active {
+    background: var(--away);
+    border-color: #ff4444;
+    box-shadow: 0 0 12px rgba(204,0,0,0.6);
+  }
+
+  .future-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .future-vs {
+    font-size: 40px;
+    font-weight: 900;
+    color: var(--txt-dim);
+    letter-spacing: 6px;
+  }
+
+  /* ─── Goal ticker ─── */
+  .ticker {
+    text-align: center;
+    padding: 5px 8px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--txt);
-    letter-spacing: 0.2px;
+    background: linear-gradient(90deg, transparent, rgba(0,102,204,0.12), transparent);
+    border-radius: 3px;
+    letter-spacing: 0.3px;
+    animation: ticker-pop 2s ease-out;
   }
-  .ticker-txt strong { font-weight: 800; }
-  .ticker-time {
-    color: var(--txt2);
-    margin-left: 4px;
-    font-weight: 500;
+  @keyframes ticker-pop {
+    0%   { background: linear-gradient(90deg, transparent, rgba(0,102,204,0.5), transparent); }
+    100% { background: linear-gradient(90deg, transparent, rgba(0,102,204,0.12), transparent); }
+  }
+  .ticker strong { font-weight: 800; }
+  .ticker-siren { margin-right: 4px; }
+  .ticker-time { color: rgba(255,255,255,0.4); margin-left: 6px; }
+
+  /* ─── Red LED ring (bottom banner) ─── */
+  .led-ring {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 16px;
+    background: linear-gradient(180deg,
+      var(--ring-dark) 0%,
+      var(--ring-red) 30%,
+      var(--ring-red) 70%,
+      var(--ring-dark) 100%
+    );
+    border-top: 1px solid #ee2222;
+  }
+  .led-ring.glow {
+    animation: ring-pulse 2.5s ease-in-out infinite;
+  }
+  @keyframes ring-pulse {
+    0%,100% { filter: brightness(0.85); }
+    50%     { filter: brightness(1.1); }
   }
 
-  /* ── Standby ── */
-  .standby-msg {
-    padding: 48px 0;
+  .led-text {
+    font-size: 14px;
+    font-weight: 900;
+    letter-spacing: 5px;
+    color: var(--txt);
+    text-transform: uppercase;
+    text-shadow: 0 0 10px rgba(255,255,255,0.5);
+  }
+
+  /* ─── Standby ─── */
+  .standby .panel { min-height: 150px; justify-content: center; }
+  .standby-text {
     text-align: center;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: 4px;
-    color: var(--txt3);
+    color: var(--txt-dim);
   }
 `;
 
-/* ── Register element ── */
 customElements.define('adler-mannheim-scoreboard', AdlerMannheimScoreboard);
 
-/* ── Card picker ── */
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'adler-mannheim-scoreboard',
   name: 'Adler Mannheim Scoreboard',
-  description: 'SAP Arena Videowürfel-Style Scoreboard für Adler Mannheim',
+  description: 'SAP Arena Videowürfel Scoreboard',
   preview: true,
 });
 
 console.info(
   `%c ADLER-SCOREBOARD %c v${CARD_VERSION} `,
-  'background:#00529C;color:#fff;font-weight:bold;padding:2px 8px;border-radius:4px 0 0 4px',
-  'background:#162040;color:#fff;padding:2px 8px;border-radius:0 4px 4px 0'
+  'background:#CC0000;color:#fff;font-weight:bold;padding:2px 8px;border-radius:4px 0 0 4px',
+  'background:#222;color:#fff;padding:2px 8px;border-radius:0 4px 4px 0'
 );

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "codeowners": ["@divinus42"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http"],
   "documentation": "https://github.com/divinus42/adlermannheimhacs",
   "iot_class": "cloud_polling",
   "requirements": []
