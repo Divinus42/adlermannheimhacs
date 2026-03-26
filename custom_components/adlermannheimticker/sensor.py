@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from homeassistant.components.sensor import ENTITY_ID_FORMAT, SensorEntity
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, generate_entity_id
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -30,12 +30,12 @@ async def async_setup_entry(
     coordinator: AdlerMannheimCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     async_add_entities([
-        AdlerMannheimGameSensor(hass, coordinator, "last_game", "Letztes Spiel"),
-        AdlerMannheimGameSensor(hass, coordinator, "current_game", "Aktuelles Spiel"),
-        AdlerMannheimGameSensor(hass, coordinator, "next_game", "Nächstes Spiel"),
-        AdlerMannheimGoalsSensor(hass, coordinator, "adler_goals", "Adler Tore", is_adler=True),
-        AdlerMannheimGoalsSensor(hass, coordinator, "opponent_goals", "Gegner Tore", is_adler=False),
-        AdlerMannheimGoalAlertSensor(hass, coordinator),
+        AdlerMannheimGameSensor(coordinator, "last_game", "Letztes Spiel"),
+        AdlerMannheimGameSensor(coordinator, "current_game", "Aktuelles Spiel"),
+        AdlerMannheimGameSensor(coordinator, "next_game", "Nächstes Spiel"),
+        AdlerMannheimGoalsSensor(coordinator, "adler_goals", "Adler Tore", is_adler=True),
+        AdlerMannheimGoalsSensor(coordinator, "opponent_goals", "Gegner Tore", is_adler=False),
+        AdlerMannheimGoalAlertSensor(coordinator),
     ])
 
 
@@ -89,7 +89,6 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        hass: HomeAssistant,
         coordinator: AdlerMannheimCoordinator,
         key: str,
         name: str,
@@ -100,9 +99,7 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"adler_mannheim_{key}"
         self._attr_icon = "mdi:hockey-puck"
         self._attr_device_info = _get_device_info()
-        self.entity_id = generate_entity_id(
-            ENTITY_ID_FORMAT, f"adler_mannheim_{key}", hass=hass
-        )
+        self.entity_id = f"sensor.adler_mannheim_{key}"
 
     @property
     def native_value(self) -> str | None:
@@ -229,7 +226,6 @@ class AdlerMannheimGoalsSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        hass: HomeAssistant,
         coordinator: AdlerMannheimCoordinator,
         key: str,
         name: str,
@@ -242,9 +238,7 @@ class AdlerMannheimGoalsSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"adler_mannheim_{key}"
         self._attr_icon = "mdi:hockey-puck"
         self._attr_device_info = _get_device_info()
-        self.entity_id = generate_entity_id(
-            ENTITY_ID_FORMAT, f"adler_mannheim_{key}", hass=hass
-        )
+        self.entity_id = f"sensor.adler_mannheim_{key}"
 
     @property
     def native_value(self) -> int:
@@ -308,15 +302,13 @@ class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
           entity_id: sensor.adler_mannheim_tor_alert
     """
 
-    def __init__(self, hass: HomeAssistant, coordinator: AdlerMannheimCoordinator) -> None:
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_name = "Adler Mannheim Tor Alert"
         self._attr_unique_id = "adler_mannheim_goal_alert"
         self._attr_icon = "mdi:hockey-puck"
         self._attr_device_info = _get_device_info()
-        self.entity_id = generate_entity_id(
-            ENTITY_ID_FORMAT, "adler_mannheim_goal_alert", hass=hass
-        )
+        self.entity_id = "sensor.adler_mannheim_goal_alert"
         # Track which Adler goals we have already seen
         self._known_adler_goal_ids: set[int] = set()
         self._goal_count: int = 0
