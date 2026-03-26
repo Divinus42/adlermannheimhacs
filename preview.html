@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Adler Mannheim Videowürfel — Preview</title>
+  <title>Adler Mannheim Videowürfel — Preview v5</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #1a1a1a; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 24px 16px; gap: 20px; font-family: system-ui; color: #ccc; }
@@ -13,16 +13,19 @@
     .buttons button { background: #222; color: #999; border: 1px solid #333; border-radius: 6px; padding: 6px 12px; font-size: 10px; font-weight: 700; cursor: pointer; letter-spacing: 1px; text-transform: uppercase; }
     .buttons button:hover { background: #CC0000; color: #fff; border-color: #CC0000; }
     .buttons button.active { background: #CC0000; color: #fff; border-color: #ff3333; }
+    .buttons .tor-btn { background: #0066CC; color: #fff; border-color: #0088ff; font-size: 12px; padding: 8px 18px; }
+    .buttons .tor-btn:hover { background: #0088ff; }
   </style>
 </head>
 <body>
-  <h1>SAP Arena Videowürfel — Preview v4</h1>
+  <h1>SAP Arena Videowürfel — Preview v5 (Goal Alert)</h1>
   <div class="buttons">
     <button onclick="showMode('live')" class="active">LIVE</button>
     <button onclick="showMode('result')">Ergebnis</button>
     <button onclick="showMode('next')">Nächstes Spiel</button>
     <button onclick="showMode('standby')">Standby</button>
-    <button onclick="simulateGoal()">TOR!</button>
+    <button onclick="simulateGoal(true)" class="tor-btn">&#x1F6A8; ADLER TOR!</button>
+    <button onclick="simulateGoal(false)" style="background:#660000;color:#fff;border-color:#990000;font-size:10px;padding:6px 12px">Gegentor</button>
   </div>
   <div class="card-container" id="container"></div>
 
@@ -34,10 +37,8 @@
   </script>
   <script src="custom_components/adlermannheimticker/www/scoreboard-card.js"></script>
   <script>
-    // Future game: 2 days from now at 19:30
-    const futureDate = new Date();
-    futureDate.setDate(futureDate.getDate() + 2);
-    futureDate.setHours(19, 30, 0, 0);
+    const PHOTO_BASE = 'https://www.adler-mannheim.de';
+    const futureDate = new Date(); futureDate.setDate(futureDate.getDate() + 2); futureDate.setHours(19, 30, 0, 0);
     const futureISO = futureDate.toISOString();
     const futureFmt = `${String(futureDate.getDate()).padStart(2,'0')}.${String(futureDate.getMonth()+1).padStart(2,'0')}. 19:30`;
 
@@ -51,10 +52,10 @@
         match_start: '25.03. 20:00', match_start_iso: new Date().toISOString(),
         period_1: '1:0', period_2: '2:1',
         goals: [
-          { period: 1, time: '08:23', type: 'ES', scorer: 'Justin Schütz', assist1: 'Marc Michaelis', assist2: 'Nigel Dawes' },
-          { period: 2, time: '24:11', type: 'ES', scorer: 'Ross Mauermann', assist1: null, assist2: null },
-          { period: 2, time: '31:45', type: 'PP', scorer: 'Nigel Dawes', assist1: 'Kris Bennett', assist2: null },
-          { period: 2, time: '38:02', type: 'ES', scorer: 'Jan Urbas', assist1: null, assist2: null },
+          { period: 1, time: '08:23', type: 'ES', is_adler_goal: true, scorer: 'Justin Schütz', scorer_jersey: '74', scorer_photo: PHOTO_BASE + '/assets/Player/Kader-25-26/adler-mannheim-2526-74_Schuetz.png', assist1: 'Marc Michaelis', assist2: 'Nigel Dawes' },
+          { period: 2, time: '24:11', type: 'ES', is_adler_goal: true, scorer: 'Ross Mauermann', scorer_jersey: '37', scorer_photo: null, assist1: null, assist2: null },
+          { period: 2, time: '31:45', type: 'PP', is_adler_goal: true, scorer: 'Nigel Dawes', scorer_jersey: '19', scorer_photo: PHOTO_BASE + '/assets/Player/Kader-25-26/adler-mannheim-2526-19_Dawes.png', assist1: 'Kris Bennett', assist2: null },
+          { period: 2, time: '38:02', type: 'ES', is_adler_goal: false, scorer: 'Jan Urbas', scorer_jersey: '44', scorer_photo: null, assist1: null, assist2: null },
         ],
       },
     };
@@ -70,10 +71,10 @@
         match_start: '20.03. 19:30',
         period_1: '1:0', period_2: '1:0', period_3: '2:0',
         goals: [
-          { period: 1, time: '00:08', type: 'ES', scorer: 'Justin Schütz', assist1: null, assist2: null },
-          { period: 2, time: '25:30', type: 'ES', scorer: 'Kris Bennett', assist1: 'Zach Solow', assist2: null },
-          { period: 3, time: '46:12', type: 'PP', scorer: 'Nigel Dawes', assist1: 'Marc Michaelis', assist2: null },
-          { period: 3, time: '58:27', type: 'EN', scorer: 'Kris Bennett', assist1: 'Zach Solow', assist2: null },
+          { period: 1, time: '00:08', type: 'ES', scorer: 'Justin Schütz', scorer_jersey: '74', scorer_photo: PHOTO_BASE + '/assets/Player/Kader-25-26/adler-mannheim-2526-74_Schuetz.png', assist1: null, assist2: null },
+          { period: 2, time: '25:30', type: 'ES', scorer: 'Kris Bennett', scorer_jersey: '93', scorer_photo: null, assist1: 'Zach Solow', assist2: null },
+          { period: 3, time: '46:12', type: 'PP', scorer: 'Nigel Dawes', scorer_jersey: '19', scorer_photo: PHOTO_BASE + '/assets/Player/Kader-25-26/adler-mannheim-2526-19_Dawes.png', assist1: 'Marc Michaelis', assist2: null },
+          { period: 3, time: '58:27', type: 'EN', scorer: 'Kris Bennett', scorer_jersey: '93', scorer_photo: null, assist1: 'Zach Solow', assist2: null },
         ],
       },
     };
@@ -92,56 +93,77 @@
 
     let currentMode = 'live';
     let goalCount = 3;
+    let cardEl = null;
 
     function buildHass(mode) {
       const s = {};
       const none = { state: 'None', attributes: {} };
-      s['sensor.adler_mannheim_nachstes_spiel'] = MOCK_NEXT;
-      s['sensor.adler_mannheim_letztes_spiel'] = MOCK_RESULT;
-      if (mode === 'live') {
-        s['sensor.adler_mannheim_aktuelles_spiel'] = MOCK_LIVE;
-      } else if (mode === 'result') {
-        s['sensor.adler_mannheim_aktuelles_spiel'] = none;
-      } else if (mode === 'next') {
-        s['sensor.adler_mannheim_aktuelles_spiel'] = none;
-        s['sensor.adler_mannheim_letztes_spiel'] = none;
-      } else {
-        s['sensor.adler_mannheim_aktuelles_spiel'] = none;
-        s['sensor.adler_mannheim_nachstes_spiel'] = none;
-        s['sensor.adler_mannheim_letztes_spiel'] = none;
-      }
+      s['sensor.adler_mannheim_next_game'] = MOCK_NEXT;
+      s['sensor.adler_mannheim_last_game'] = MOCK_RESULT;
+      s['sensor.adler_mannheim_current_game'] = mode === 'live' ? MOCK_LIVE : none;
+      if (mode === 'standby') { s['sensor.adler_mannheim_next_game'] = none; s['sensor.adler_mannheim_last_game'] = none; }
+      if (mode === 'next') s['sensor.adler_mannheim_last_game'] = none;
       return { states: s };
     }
 
     function showMode(mode) {
       currentMode = mode; goalCount = 3;
-      document.querySelectorAll('.buttons button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.buttons button:not(.tor-btn)').forEach(b => b.classList.remove('active'));
       event.target.classList.add('active');
       renderCard();
     }
 
     const SCORERS = [
-      { scorer: 'Marc Michaelis', assist1: 'Justin Schütz', assist2: 'Nigel Dawes' },
-      { scorer: 'Zach Solow', assist1: 'Kris Bennett', assist2: null },
-      { scorer: 'Jordan Szwarz', assist1: 'Yannick Proske', assist2: null },
+      { scorer: 'Marc Michaelis', scorer_jersey: '28', scorer_photo: PHOTO_BASE + '/assets/Player/Kader-25-26/adler-mannheim-2526-28_Michaelis.png', assist1: 'Justin Schütz', assist2: 'Nigel Dawes' },
+      { scorer: 'Zach Solow', scorer_jersey: '92', scorer_photo: null, assist1: 'Kris Bennett', assist2: null },
+      { scorer: 'Jordan Szwarz', scorer_jersey: '15', scorer_photo: null, assist1: 'Yannick Proske', assist2: null },
     ];
 
-    function simulateGoal() {
-      if (currentMode !== 'live') { currentMode = 'live'; document.querySelectorAll('.buttons button').forEach(b => b.classList.remove('active')); document.querySelector('.buttons button').classList.add('active'); }
-      goalCount++;
-      MOCK_LIVE.attributes.score_home = goalCount;
-      MOCK_LIVE.attributes.goals.push({ period: goalCount <= 5 ? 2 : 3, time: `${40+goalCount}:${String(Math.floor(Math.random()*59)).padStart(2,'0')}`, type: 'ES', ...SCORERS[(goalCount-4)%SCORERS.length] });
-      MOCK_LIVE.state = `LIVE ${goalCount}:1`;
-      renderCard();
+    let awayGoals = 1;
+
+    function simulateGoal(isAdler) {
+      if (currentMode !== 'live') {
+        currentMode = 'live';
+        document.querySelectorAll('.buttons button:not(.tor-btn)').forEach(b => b.classList.remove('active'));
+        document.querySelector('.buttons button').classList.add('active');
+      }
+
+      if (isAdler) {
+        goalCount++;
+        const s = SCORERS[(goalCount - 4) % SCORERS.length];
+        MOCK_LIVE.attributes.score_home = goalCount;
+        MOCK_LIVE.attributes.goals = [...MOCK_LIVE.attributes.goals, {
+          period: goalCount <= 5 ? 2 : 3,
+          time: `${40 + goalCount}:${String(Math.floor(Math.random() * 59)).padStart(2, '0')}`,
+          type: 'ES', is_adler_goal: true, ...s,
+        }];
+      } else {
+        awayGoals++;
+        MOCK_LIVE.attributes.score_away = awayGoals;
+        MOCK_LIVE.attributes.goals = [...MOCK_LIVE.attributes.goals, {
+          period: 2,
+          time: `${35 + awayGoals}:${String(Math.floor(Math.random() * 59)).padStart(2, '0')}`,
+          type: 'ES', is_adler_goal: false,
+          scorer: 'Jan Urbas', scorer_jersey: '44', scorer_photo: null,
+          assist1: 'Philip Samuelsson', assist2: null,
+        }];
+      }
+      MOCK_LIVE.state = `LIVE ${goalCount}:${awayGoals}`;
+      // Don't recreate the card — just push new hass to trigger alert detection
+      if (cardEl) {
+        cardEl.hass = buildHass(currentMode);
+      } else {
+        renderCard();
+      }
     }
 
     function renderCard() {
       const c = document.getElementById('container');
       c.innerHTML = '';
-      const el = document.createElement('adler-mannheim-scoreboard');
-      el.setConfig({});
-      c.appendChild(el);
-      el.hass = buildHass(currentMode);
+      cardEl = document.createElement('adler-mannheim-scoreboard');
+      cardEl.setConfig({});
+      c.appendChild(cardEl);
+      cardEl.hass = buildHass(currentMode);
     }
 
     renderCard();
