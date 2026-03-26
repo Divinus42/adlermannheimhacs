@@ -134,6 +134,7 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
 
         adler_is_home = _is_adler_home(game)
         opponent = game.get("awayteam") if adler_is_home else game.get("hometeam")
+        status = game.get("status", "")
 
         # Build full logo URLs
         home_logo_path = game.get("homelogourl")
