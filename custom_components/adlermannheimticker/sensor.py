@@ -160,12 +160,13 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
             "away_logo": f"{_LOGO_BASE}{away_logo_path}" if away_logo_path else None,
         }
 
-        # Period scores (from detail endpoint)
-        for period in (1, 2, 3):
-            h = game.get(f"home_goals_period{period}")
-            a = game.get(f"away_goals_period{period}")
-            if h is not None:
-                attrs[f"period_{period}"] = f"{h}:{a}"
+        # Period scores (from detail endpoint, skip for future games)
+        if status != "FUTURE":
+            for period in (1, 2, 3):
+                h = game.get(f"home_goals_period{period}")
+                a = game.get(f"away_goals_period{period}")
+                if h is not None and (h > 0 or a > 0 or status == "LIVE"):
+                    attrs[f"period_{period}"] = f"{h}:{a}"
 
         ot_h = game.get("home_goals_overtime")
         ot_a = game.get("away_goals_overtime")

@@ -1,4 +1,4 @@
-const CARD_VERSION = '5.0.0';
+const CARD_VERSION = '5.1.0';
 
 class AdlerMannheimScoreboard extends HTMLElement {
   constructor() {
