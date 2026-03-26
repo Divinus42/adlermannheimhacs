@@ -1,4 +1,4 @@
-const CARD_VERSION = '5.1.0';
+const CARD_VERSION = '6.0.0';
 
 class AdlerMannheimScoreboard extends HTMLElement {
   constructor() {
@@ -7,10 +7,11 @@ class AdlerMannheimScoreboard extends HTMLElement {
     this._config = {};
     this._hass = null;
     this._countdownTimer = null;
-    this._lastGoalCount = -1;       // for goal alert detection
+    this._lastGoalCount = -1;
     this._goalAlertTimeout = null;
     this._showingAlert = false;
     this._alertGoal = null;
+    this._expandedPanel = null;  // 'last' or 'next'
   }
 
   setConfig(config) {
@@ -200,6 +201,11 @@ class AdlerMannheimScoreboard extends HTMLElement {
     }, 3000);
   }
 
+  _togglePanel(panel) {
+    this._expandedPanel = this._expandedPanel === panel ? null : panel;
+    this._render();
+  }
+
   /* ── Main render ── */
   _render() {
     if (!this._hass) return;
@@ -210,10 +216,17 @@ class AdlerMannheimScoreboard extends HTMLElement {
         <style>${STYLES}</style>
         <div class="cube">
           ${main ? this._renderScoreboard(main) : this._renderStandby()}
-          ${this._renderDetails(main)}
+          ${this._renderDetails()}
           ${this._showingAlert ? this._renderGoalOverlay() : ''}
         </div>
       </ha-card>`;
+
+    // Attach click listeners for expandable panels
+    const sr = this.shadowRoot;
+    const nextCard = sr.querySelector('.next-card');
+    if (nextCard) nextCard.addEventListener('click', () => this._togglePanel('next'));
+    const lastCard = sr.querySelector('.last-card');
+    if (lastCard) lastCard.addEventListener('click', () => this._togglePanel('last'));
   }
 
   /* ══════════════════════════════════════
@@ -343,50 +356,25 @@ class AdlerMannheimScoreboard extends HTMLElement {
   /* ══════════════════════════════════════
      DETAILS PANEL
      ══════════════════════════════════════ */
-  _renderDetails(main) {
+  _renderDetails() {
     const e = this._discoverEntities();
     const nextEntity = e.future;
     const lastEntity = e.final;
-
-    let goalsHtml = '';
-    const gameWithGoals = main ? main.state : null;
-    if (gameWithGoals && gameWithGoals.attributes.goals && gameWithGoals.attributes.goals.length > 0) {
-      goalsHtml = this._renderGoalList(gameWithGoals.attributes);
-    }
 
     let nextHtml = '';
     if (nextEntity) nextHtml = this._renderNextGame(nextEntity.attributes, nextEntity.state);
 
     let lastHtml = '';
-    if (lastEntity && main && main.mode !== 'result') lastHtml = this._renderLastGame(lastEntity.attributes);
+    if (lastEntity) lastHtml = this._renderLastGame(lastEntity.attributes);
 
-    if (!goalsHtml && !nextHtml && !lastHtml) return '';
+    if (!nextHtml && !lastHtml) return '';
 
     return `
       <div class="details">
-        ${goalsHtml}
         <div class="info-row">${nextHtml}${lastHtml}</div>
+        ${this._expandedPanel === 'next' && nextEntity ? this._renderNextExpanded(nextEntity.attributes) : ''}
+        ${this._expandedPanel === 'last' && lastEntity ? this._renderTimeline(lastEntity.attributes) : ''}
       </div>`;
-  }
-
-  _renderGoalList(a) {
-    const goals = a.goals || [];
-    if (!goals.length) return '';
-    const rows = goals.map(g => {
-      const scorer = g.scorer || '?';
-      const assists = [g.assist1, g.assist2].filter(Boolean).join(', ');
-      const typeLabel = {'PP':'PP','EN':'EN','SH':'SH'}[g.type] || '';
-      const photo = g.scorer_photo || '';
-      return `
-        <div class="goal-row">
-          ${photo ? `<img class="goal-photo" src="${photo}" onerror="this.style.display='none'"/>` : '<div class="goal-photo-empty"></div>'}
-          <span class="goal-time">${g.time || ''}</span>
-          <span class="goal-period">${g.period || ''}.</span>
-          <span class="goal-scorer">${scorer}${g.scorer_jersey ? ` <span class="goal-jersey">#${g.scorer_jersey}</span>` : ''}${typeLabel ? ` <span class="goal-type">${typeLabel}</span>` : ''}</span>
-          <span class="goal-assists">${assists || ''}</span>
-        </div>`;
-    }).join('');
-    return `<div class="detail-section"><div class="detail-title">TORE</div><div class="goal-list">${rows}</div></div>`;
   }
 
   _renderNextGame(a, state) {
@@ -394,9 +382,10 @@ class AdlerMannheimScoreboard extends HTMLElement {
     const cd = this._calcCountdown(iso);
     const opponent = a.opponent || a.away_team || '?';
     const loc = a.is_home ? 'Heim' : 'Auswärts';
+    const exp = this._expandedPanel === 'next';
     return `
-      <div class="info-card next-card">
-        <div class="info-label">NÄCHSTES SPIEL</div>
+      <div class="info-card next-card clickable ${exp ? 'expanded' : ''}">
+        <div class="info-label">NÄCHSTES SPIEL <span class="expand-icon">${exp ? '▲' : '▼'}</span></div>
         <div class="info-opponent">${opponent}</div>
         <div class="info-meta">${state || ''} · ${loc}</div>
         ${cd ? `<div class="cd-time" data-iso="${iso || ''}">${cd}</div>` : ''}
@@ -406,12 +395,124 @@ class AdlerMannheimScoreboard extends HTMLElement {
   _renderLastGame(a) {
     const opponent = a.opponent || a.away_team || '?';
     const loc = a.is_home ? 'Heim' : 'Auswärts';
+    const exp = this._expandedPanel === 'last';
     return `
-      <div class="info-card last-card">
-        <div class="info-label">LETZTES SPIEL</div>
+      <div class="info-card last-card clickable ${exp ? 'expanded' : ''}">
+        <div class="info-label">LETZTES SPIEL <span class="expand-icon">${exp ? '▲' : '▼'}</span></div>
         <div class="info-opponent">${opponent}</div>
         <div class="last-score">${a.score_home ?? 0} : ${a.score_away ?? 0}</div>
         <div class="info-meta">${a.match_start || ''} · ${loc}</div>
+      </div>`;
+  }
+
+  /* ── Next game expanded details ── */
+  _renderNextExpanded(a) {
+    const home = a.home_team || '?';
+    const away = a.away_team || '?';
+    const comp = a.competition || '';
+    const iso = a.match_start_iso || null;
+    const cd = this._calcCountdown(iso);
+
+    return `
+      <div class="expanded-panel">
+        <div class="exp-matchup">
+          <div class="exp-team">
+            ${a.home_logo ? `<img class="exp-logo" src="${a.home_logo}" onerror="this.style.display='none'"/>` : ''}
+            <span class="exp-tname">${home}</span>
+            ${a.is_home === true ? '' : a.is_home === false ? '' : ''}
+          </div>
+          <div class="exp-vs">VS</div>
+          <div class="exp-team">
+            ${a.away_logo ? `<img class="exp-logo" src="${a.away_logo}" onerror="this.style.display='none'"/>` : ''}
+            <span class="exp-tname">${away}</span>
+          </div>
+        </div>
+        <div class="exp-info-grid">
+          <div class="exp-info-item"><span class="exp-key">Anpfiff</span><span class="exp-val">${a.match_start || '?'}</span></div>
+          <div class="exp-info-item"><span class="exp-key">Countdown</span><span class="exp-val exp-cd">${cd || '?'}</span></div>
+          <div class="exp-info-item"><span class="exp-key">Wettbewerb</span><span class="exp-val">${comp}</span></div>
+          <div class="exp-info-item"><span class="exp-key">Ort</span><span class="exp-val">${a.is_home ? 'Heim (SAP Arena)' : 'Auswärts'}</span></div>
+        </div>
+      </div>`;
+  }
+
+  /* ── Last game timeline ── */
+  _renderTimeline(a) {
+    // Merge goals + penalties into one timeline, sorted by period then time
+    const events = [];
+
+    for (const g of (a.goals || [])) {
+      events.push({
+        period: g.period || 0,
+        time: g.time || '00:00',
+        type: g.is_adler_goal ? 'adler-goal' : 'opp-goal',
+        primary: g.scorer || '?',
+        jersey: g.scorer_jersey,
+        photo: g.scorer_photo,
+        secondary: [g.assist1, g.assist2].filter(Boolean).join(', '),
+        badge: g.type && g.type !== 'ES' ? g.type : null,
+      });
+    }
+
+    for (const p of (a.penalties || [])) {
+      events.push({
+        period: p.period || 0,
+        time: p.time || '00:00',
+        type: 'penalty',
+        primary: p.player || '?',
+        secondary: p.infraction || '',
+        badge: p.minutes || '2 Min',
+      });
+    }
+
+    // Sort by period, then by time
+    events.sort((a, b) => {
+      if (a.period !== b.period) return a.period - b.period;
+      return a.time.localeCompare(b.time);
+    });
+
+    if (!events.length) return '<div class="expanded-panel"><div class="tl-empty">Keine Ereignisse</div></div>';
+
+    // Group by period
+    let html = '';
+    let lastPeriod = 0;
+    for (const ev of events) {
+      if (ev.period !== lastPeriod) {
+        lastPeriod = ev.period;
+        html += `<div class="tl-period-header">${ev.period}. DRITTEL</div>`;
+      }
+
+      const dotClass = ev.type === 'adler-goal' ? 'dot-adler'
+        : ev.type === 'opp-goal' ? 'dot-opp' : 'dot-penalty';
+
+      html += `
+        <div class="tl-event ${ev.type}">
+          <div class="tl-time">${ev.time}</div>
+          <div class="tl-line"><div class="tl-dot ${dotClass}"></div></div>
+          <div class="tl-content">
+            <div class="tl-primary">
+              ${ev.photo ? `<img class="tl-photo" src="${ev.photo}" onerror="this.style.display='none'"/>` : ''}
+              <span>${ev.primary}${ev.jersey ? ` <span class="tl-jersey">#${ev.jersey}</span>` : ''}</span>
+              ${ev.badge ? `<span class="tl-badge ${ev.type}">${ev.badge}</span>` : ''}
+            </div>
+            ${ev.secondary ? `<div class="tl-secondary">${ev.type === 'penalty' ? ev.secondary : 'Assists: ' + ev.secondary}</div>` : ''}
+          </div>
+        </div>`;
+    }
+
+    // Summary
+    const adlerGoals = (a.goals || []).filter(g => g.is_adler_goal).length;
+    const oppGoals = (a.goals || []).filter(g => !g.is_adler_goal).length;
+    const totalPen = (a.penalties || []).length;
+
+    return `
+      <div class="expanded-panel">
+        <div class="tl-summary">
+          <span class="tl-sum-item"><span class="dot-adler-sm"></span> ${adlerGoals} Adler-Tore</span>
+          <span class="tl-sum-item"><span class="dot-opp-sm"></span> ${oppGoals} Gegentore</span>
+          <span class="tl-sum-item"><span class="dot-pen-sm"></span> ${totalPen} Strafen</span>
+        </div>
+        <div class="timeline">${html}</div>
       </div>`;
   }
 }
@@ -428,90 +529,83 @@ const STYLES = `
     --ring-red: #BB0000; --ring-dark: #660000;
     --detail-bg: #0e0e12; --card-bg: #141418;
   }
-  ha-card { background: transparent !important; border: none !important; box-shadow: none !important; }
-  .cube { font-family: 'Segoe UI','Arial Black',system-ui,sans-serif; -webkit-font-smoothing: antialiased; position: relative; }
+  ha-card { background: transparent !important; border: none !important; box-shadow: none !important; overflow: hidden; }
+  .cube { font-family: 'Segoe UI','Arial Black',system-ui,sans-serif; -webkit-font-smoothing: antialiased; position: relative; width: 100%; overflow: hidden; }
 
   /* ─── SCOREBOARD ─── */
-  .screen { background: #111; border-radius: 8px 8px 0 0; overflow: hidden; border: 4px solid #1a1a1a; border-bottom: none;
+  .screen { background: #111; border-radius: 8px 8px 0 0; overflow: hidden; border: 3px solid #1a1a1a; border-bottom: none;
     box-shadow: 0 2px 16px rgba(0,0,0,0.9), inset 0 0 40px rgba(0,0,0,0.8); }
-  .screen:only-child { border-radius: 8px; border-bottom: 4px solid #1a1a1a; }
-  .panel { background: var(--bg); padding: 12px 10px 8px; min-height: 170px; display: flex; flex-direction: column; gap: 6px; }
+  .screen:only-child { border-radius: 8px; border-bottom: 3px solid #1a1a1a; }
+  .panel { background: var(--bg); padding: 10px 6px 6px; min-height: 140px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
 
   .row-top { display: flex; align-items: flex-start; }
-  .straf-col { flex: 0 0 60px; display: flex; flex-direction: column; align-items: center; gap: 3px; }
-  .straf-title { font-size: 7px; font-weight: 800; letter-spacing: 1.5px; color: var(--txt-dim); }
-  .straf-box { width: 46px; height: 18px; border-radius: 2px; background: #0a0a0a; border: 1px solid #1a1a1a; }
-  .clock-col { flex: 1; display: flex; flex-direction: column; align-items: center; }
-  .team-row { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; }
-  .team-name { font-size: 14px; font-weight: 900; letter-spacing: 3px; min-width: 46px; }
+  .straf-col { flex: 0 0 48px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .straf-title { font-size: 6px; font-weight: 800; letter-spacing: 1px; color: var(--txt-dim); }
+  .straf-box { width: 36px; height: 14px; border-radius: 2px; background: #0a0a0a; border: 1px solid #1a1a1a; }
+  .clock-col { flex: 1; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+  .team-row { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+  .team-name { font-size: 12px; font-weight: 900; letter-spacing: 2px; }
   .home-c { color: var(--home); text-align: right; }
   .away-c { color: var(--away); text-align: left; }
-  .clock { font-size: 26px; font-weight: 900; color: var(--txt); letter-spacing: 2px; text-shadow: 0 0 14px rgba(255,255,255,0.3); font-variant-numeric: tabular-nums; min-width: 80px; text-align: center; }
+  .clock { font-size: 20px; font-weight: 900; color: var(--txt); letter-spacing: 1px; text-shadow: 0 0 14px rgba(255,255,255,0.3); font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
   .live .clock { text-shadow: 0 0 18px rgba(255,255,255,0.45); }
 
-  .row-score { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
-  .pblocks-col { flex: 0 0 42px; display: flex; flex-direction: column; gap: 4px; align-items: center; }
-  .led-block { width: 38px; height: 26px; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
-  .led-block.home.on { background: var(--home); box-shadow: 0 0 8px rgba(0,102,204,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
+  .row-score { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
+  .pblocks-col { flex: 0 0 32px; display: flex; flex-direction: column; gap: 3px; align-items: center; }
+  .led-block { width: 30px; height: 22px; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
+  .led-block.home.on { background: var(--home); box-shadow: 0 0 6px rgba(0,102,204,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
   .led-block.home.off { background: var(--home-dim); border: 1px solid rgba(0,102,204,0.2); }
-  .led-block.away.on { background: var(--away); box-shadow: 0 0 8px rgba(204,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
+  .led-block.away.on { background: var(--away); box-shadow: 0 0 6px rgba(204,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
   .led-block.away.off { background: var(--away-dim); border: 1px solid rgba(204,0,0,0.2); }
-  .led-val { font-size: 16px; font-weight: 900; color: var(--txt); text-shadow: 0 0 4px rgba(255,255,255,0.3); }
+  .led-val { font-size: 13px; font-weight: 900; color: var(--txt); text-shadow: 0 0 4px rgba(255,255,255,0.3); }
   .led-block.off .led-val { color: rgba(255,255,255,0.1); }
 
-  .score-col { flex: 1; display: flex; align-items: center; justify-content: center; }
-  .score-display { display: flex; align-items: center; justify-content: center; gap: 6px; }
-  .score-digit { font-size: 72px; font-weight: 900; color: var(--txt); line-height: 1; min-width: 50px; text-align: center;
+  .score-col { flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0; }
+  .score-display { display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .score-digit { font-size: 52px; font-weight: 900; color: var(--txt); line-height: 1; min-width: 36px; text-align: center;
     text-shadow: 0 0 18px rgba(255,255,255,0.25), 0 0 40px rgba(255,255,255,0.08); }
   .live .score-digit { text-shadow: 0 0 22px rgba(255,255,255,0.35), 0 0 50px rgba(255,255,255,0.12); }
-  .period-circle { width: 30px; height: 30px; border-radius: 50%; background: #333; border: 2px solid #555;
-    display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 900; color: var(--txt); flex-shrink: 0; }
-  .period-circle.active { background: var(--away); border-color: #ff4444; box-shadow: 0 0 12px rgba(204,0,0,0.6); }
-  .future-vs { font-size: 40px; font-weight: 900; color: var(--txt-dim); letter-spacing: 6px; text-align: center; }
+  .period-circle { width: 24px; height: 24px; border-radius: 50%; background: #333; border: 2px solid #555;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: var(--txt); flex-shrink: 0; }
+  .period-circle.active { background: var(--away); border-color: #ff4444; box-shadow: 0 0 10px rgba(204,0,0,0.6); }
+  .future-vs { font-size: 32px; font-weight: 900; color: var(--txt-dim); letter-spacing: 4px; text-align: center; }
 
-  .ticker { text-align: center; padding: 5px 8px; font-size: 11px; font-weight: 600; color: var(--txt);
-    background: linear-gradient(90deg,transparent,rgba(0,102,204,0.12),transparent); border-radius: 3px; }
+  .ticker { text-align: center; padding: 4px 6px; font-size: 10px; font-weight: 600; color: var(--txt);
+    background: linear-gradient(90deg,transparent,rgba(0,102,204,0.12),transparent); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ticker strong { font-weight: 800; }
-  .ticker-time { color: rgba(255,255,255,0.4); margin-left: 6px; }
+  .ticker-time { color: rgba(255,255,255,0.4); margin-left: 4px; }
 
-  .led-ring { display: flex; align-items: center; justify-content: center; padding: 9px 16px;
+  .led-ring { display: flex; align-items: center; justify-content: center; padding: 7px 10px;
     background: linear-gradient(180deg, var(--ring-dark) 0%, var(--ring-red) 30%, var(--ring-red) 70%, var(--ring-dark) 100%); border-top: 1px solid #ee2222; }
   .led-ring.glow { animation: ring-pulse 2.5s ease-in-out infinite; }
   @keyframes ring-pulse { 0%,100%{filter:brightness(0.85)} 50%{filter:brightness(1.1)} }
-  .led-text { font-size: 14px; font-weight: 900; letter-spacing: 5px; color: var(--txt); text-shadow: 0 0 10px rgba(255,255,255,0.5); }
+  .led-text { font-size: 11px; font-weight: 900; letter-spacing: 3px; color: var(--txt); text-shadow: 0 0 10px rgba(255,255,255,0.5); }
 
-  .standby .panel { min-height: 150px; justify-content: center; }
-  .standby-text { text-align: center; font-size: 12px; font-weight: 800; letter-spacing: 4px; color: var(--txt-dim); }
+  .standby .panel { min-height: 120px; justify-content: center; }
+  .standby-text { text-align: center; font-size: 11px; font-weight: 800; letter-spacing: 3px; color: var(--txt-dim); }
 
   /* ═══ GOAL ALERT OVERLAY ═══ */
   .goal-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 100;
-    border-radius: 8px;
-    overflow: hidden;
-    background: rgba(0,0,0,0.92);
-    animation: overlay-in 0.3s ease-out;
+    position: absolute; inset: 0; z-index: 100; border-radius: 8px; overflow: hidden;
+    background: rgba(0,0,0,0.92); animation: overlay-in 0.3s ease-out;
   }
   @keyframes overlay-in { from { opacity: 0; transform: scale(1.05); } to { opacity: 1; transform: scale(1); } }
 
-  /* Phase 1: TOOOR! */
   .alert-phase1 {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; gap: 8px; animation: phase1-pulse 0.6s ease-in-out infinite alternate;
+    height: 100%; gap: 6px; animation: phase1-pulse 0.6s ease-in-out infinite alternate;
   }
   .goal-overlay.phase2 .alert-phase1 { display: none; }
-
   @keyframes phase1-pulse {
     from { background: radial-gradient(circle, rgba(0,102,204,0.3) 0%, rgba(0,0,0,0) 70%); }
     to   { background: radial-gradient(circle, rgba(204,0,0,0.3) 0%, rgba(0,0,0,0) 70%); }
   }
 
-  .alert-siren { font-size: 48px; animation: siren-spin 0.5s ease-in-out infinite alternate; }
+  .alert-siren { font-size: 36px; animation: siren-spin 0.5s ease-in-out infinite alternate; }
   @keyframes siren-spin { from { transform: rotate(-10deg) scale(1); } to { transform: rotate(10deg) scale(1.1); } }
 
   .alert-tor {
-    font-size: 56px; font-weight: 900; color: var(--txt); letter-spacing: 8px;
+    font-size: 40px; font-weight: 900; color: var(--txt); letter-spacing: 6px;
     text-shadow: 0 0 30px var(--home), 0 0 60px rgba(0,102,204,0.5), 0 4px 8px rgba(0,0,0,0.8);
     animation: tor-glow 0.8s ease-in-out infinite alternate;
   }
@@ -520,59 +614,129 @@ const STYLES = `
     to   { text-shadow: 0 0 40px var(--away), 0 0 80px rgba(204,0,0,0.5); }
   }
 
-  .alert-score { font-size: 24px; font-weight: 800; color: var(--txt-mid); letter-spacing: 4px; }
+  .alert-score { font-size: 20px; font-weight: 800; color: var(--txt-mid); letter-spacing: 3px; }
 
-  /* Phase 2: Scorer */
   .alert-phase2 {
-    display: none; flex-direction: row; align-items: center; justify-content: center;
-    height: 100%; gap: 16px; padding: 16px;
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 8px; padding: 12px; text-align: center;
   }
   .goal-overlay.phase2 .alert-phase2 { display: flex; animation: phase2-in 0.5s ease-out; }
   @keyframes phase2-in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
   .alert-photo {
-    width: 120px; height: 120px; object-fit: contain; border-radius: 8px;
+    width: 90px; height: 90px; object-fit: contain; border-radius: 8px;
     background: radial-gradient(circle, rgba(0,102,204,0.15) 0%, transparent 70%);
-    filter: drop-shadow(0 0 16px rgba(0,102,204,0.4));
+    filter: drop-shadow(0 0 12px rgba(0,102,204,0.4));
   }
 
-  .alert-info { display: flex; flex-direction: column; gap: 4px; }
-  .alert-label { font-size: 9px; font-weight: 800; letter-spacing: 3px; color: var(--home); text-transform: uppercase; }
-  .alert-name { font-size: 26px; font-weight: 900; color: var(--txt); line-height: 1.1;
+  .alert-info { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .alert-label { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--home); text-transform: uppercase; }
+  .alert-name { font-size: 20px; font-weight: 900; color: var(--txt); line-height: 1.1;
     text-shadow: 0 0 12px rgba(0,102,204,0.3); }
-  .alert-jersey { font-size: 18px; font-weight: 800; color: var(--txt-mid); }
-  .alert-assists { font-size: 12px; color: var(--txt-mid); font-style: italic; }
-  .alert-time { font-size: 11px; color: var(--txt-dim); margin-top: 2px; }
-  .alert-score2 { font-size: 20px; font-weight: 900; color: var(--txt); letter-spacing: 3px; margin-top: 4px; }
+  .alert-jersey { font-size: 15px; font-weight: 800; color: var(--txt-mid); }
+  .alert-assists { font-size: 11px; color: var(--txt-mid); font-style: italic; }
+  .alert-time { font-size: 10px; color: var(--txt-dim); }
+  .alert-score2 { font-size: 18px; font-weight: 900; color: var(--txt); letter-spacing: 2px; margin-top: 2px; }
 
   /* ─── DETAILS PANEL ─── */
-  .details { background: var(--detail-bg); border: 4px solid #1a1a1a; border-top: 1px solid #222;
-    border-radius: 0 0 8px 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .detail-section { }
-  .detail-title { font-size: 9px; font-weight: 800; letter-spacing: 2.5px; color: var(--txt-dim);
-    margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #1a1a1a; }
+  .details { background: var(--detail-bg); border: 3px solid #1a1a1a; border-top: 1px solid #222;
+    border-radius: 0 0 8px 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+  .detail-title { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt-dim);
+    margin-bottom: 4px; padding-bottom: 3px; border-bottom: 1px solid #1a1a1a; }
 
-  .goal-list { display: flex; flex-direction: column; gap: 3px; }
-  .goal-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px;
-    font-size: 11px; color: var(--txt-mid); background: rgba(255,255,255,0.02); }
-  .goal-row:hover { background: rgba(255,255,255,0.04); }
+  .goal-list { display: flex; flex-direction: column; gap: 2px; }
+  .goal-row { display: flex; align-items: center; gap: 5px; padding: 3px 4px; border-radius: 4px;
+    font-size: 10px; color: var(--txt-mid); background: rgba(255,255,255,0.02); overflow: hidden; }
 
-  .goal-photo { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: #1a1a1a; flex-shrink: 0; }
-  .goal-photo-empty { width: 28px; height: 28px; border-radius: 50%; background: #1a1a1a; flex-shrink: 0; }
-  .goal-time { font-weight: 700; color: var(--txt); min-width: 36px; font-variant-numeric: tabular-nums; }
-  .goal-period { font-weight: 600; color: var(--txt-dim); min-width: 16px; font-size: 10px; }
-  .goal-scorer { font-weight: 700; color: var(--txt); flex: 1; }
-  .goal-jersey { font-size: 9px; font-weight: 700; color: var(--txt-dim); }
-  .goal-type { font-size: 9px; font-weight: 800; color: var(--home); background: rgba(0,102,204,0.15); padding: 1px 4px; border-radius: 3px; margin-left: 4px; }
-  .goal-assists { font-size: 10px; color: var(--txt-dim); font-style: italic; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .goal-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: #1a1a1a; flex-shrink: 0; }
+  .goal-photo-empty { width: 24px; height: 24px; border-radius: 50%; background: #1a1a1a; flex-shrink: 0; }
+  .goal-time { font-weight: 700; color: var(--txt); min-width: 32px; font-variant-numeric: tabular-nums; font-size: 10px; }
+  .goal-period { font-weight: 600; color: var(--txt-dim); min-width: 14px; font-size: 9px; }
+  .goal-scorer { font-weight: 700; color: var(--txt); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .goal-jersey { font-size: 8px; font-weight: 700; color: var(--txt-dim); }
+  .goal-type { font-size: 8px; font-weight: 800; color: var(--home); background: rgba(0,102,204,0.15); padding: 1px 3px; border-radius: 3px; margin-left: 2px; }
+  .goal-assists { font-size: 9px; color: var(--txt-dim); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; min-width: 0; }
 
-  .info-row { display: flex; gap: 8px; }
-  .info-card { flex: 1; background: var(--card-bg); border-radius: 6px; padding: 10px; border: 1px solid #1e1e24; }
-  .info-label { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt-dim); margin-bottom: 4px; }
-  .info-opponent { font-size: 13px; font-weight: 800; color: var(--txt); margin-bottom: 2px; }
-  .info-meta { font-size: 10px; color: var(--txt-dim); }
-  .cd-time { font-size: 18px; font-weight: 900; color: var(--home); margin-top: 4px; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
-  .last-score { font-size: 20px; font-weight: 900; color: var(--txt); margin: 2px 0; letter-spacing: 2px; }
+  .info-row { display: flex; gap: 6px; }
+  .info-card { flex: 1; background: var(--card-bg); border-radius: 6px; padding: 8px; border: 1px solid #1e1e24; min-width: 0; overflow: hidden; }
+  .info-label { font-size: 7px; font-weight: 800; letter-spacing: 1.5px; color: var(--txt-dim); margin-bottom: 3px; }
+  .info-opponent { font-size: 12px; font-weight: 800; color: var(--txt); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info-meta { font-size: 9px; color: var(--txt-dim); }
+  .cd-time { font-size: 16px; font-weight: 900; color: var(--home); margin-top: 3px; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+  .last-score { font-size: 18px; font-weight: 900; color: var(--txt); margin: 2px 0; letter-spacing: 2px; }
+
+  /* ─── Clickable cards ─── */
+  .clickable { cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+  .clickable:hover { border-color: #333; background: #1a1a20; }
+  .clickable.expanded { border-color: var(--home); background: #12121a; }
+  .expand-icon { float: right; font-size: 8px; color: var(--txt-dim); }
+
+  /* ─── Expanded panel ─── */
+  .expanded-panel { background: var(--card-bg); border: 1px solid #1e1e24; border-radius: 6px; padding: 10px; animation: expand-in 0.25s ease-out; }
+  @keyframes expand-in { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 800px; } }
+
+  /* Next game expanded */
+  .exp-matchup { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 10px; }
+  .exp-team { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+  .exp-logo { width: 48px; height: 48px; object-fit: contain; filter: drop-shadow(0 0 6px rgba(255,255,255,0.1)); }
+  .exp-tname { font-size: 11px; font-weight: 700; color: var(--txt); text-align: center; }
+  .exp-vs { font-size: 18px; font-weight: 900; color: var(--txt-dim); letter-spacing: 2px; }
+  .exp-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .exp-info-item { background: rgba(255,255,255,0.02); border-radius: 4px; padding: 6px 8px; }
+  .exp-key { display: block; font-size: 8px; font-weight: 700; color: var(--txt-dim); letter-spacing: 1px; text-transform: uppercase; }
+  .exp-val { display: block; font-size: 13px; font-weight: 800; color: var(--txt); margin-top: 2px; }
+  .exp-cd { color: var(--home); }
+
+  /* ─── Timeline ─── */
+  .tl-summary { display: flex; gap: 10px; justify-content: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .tl-sum-item { font-size: 9px; font-weight: 700; color: var(--txt-mid); display: flex; align-items: center; gap: 4px; }
+  .dot-adler-sm, .dot-opp-sm, .dot-pen-sm { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-adler-sm { background: var(--home); }
+  .dot-opp-sm { background: var(--away); }
+  .dot-pen-sm { background: #cc9900; }
+
+  .tl-period-header {
+    font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt-dim);
+    text-transform: uppercase; padding: 6px 0 3px 42px; border-top: 1px solid #1a1a1a;
+  }
+  .tl-period-header:first-child { border-top: none; }
+
+  .timeline { display: flex; flex-direction: column; }
+
+  .tl-event { display: flex; align-items: flex-start; gap: 0; min-height: 32px; }
+
+  .tl-time {
+    flex: 0 0 36px; font-size: 10px; font-weight: 700; color: var(--txt-mid);
+    text-align: right; padding-top: 4px; font-variant-numeric: tabular-nums;
+  }
+
+  .tl-line {
+    flex: 0 0 20px; display: flex; flex-direction: column; align-items: center; position: relative;
+    padding-top: 5px;
+  }
+  .tl-line::before {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 1px; background: #222; left: 50%;
+  }
+  .tl-dot {
+    width: 10px; height: 10px; border-radius: 50%; position: relative; z-index: 1; flex-shrink: 0;
+  }
+  .dot-adler { background: var(--home); box-shadow: 0 0 6px rgba(0,102,204,0.6); }
+  .dot-opp { background: var(--away); box-shadow: 0 0 6px rgba(204,0,0,0.6); }
+  .dot-penalty { background: #cc9900; box-shadow: 0 0 6px rgba(204,153,0,0.5); }
+
+  .tl-content { flex: 1; padding: 2px 0 8px 6px; min-width: 0; }
+  .tl-primary { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .tl-primary span { font-size: 11px; font-weight: 700; color: var(--txt); }
+  .tl-photo { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+  .tl-jersey { font-size: 9px; font-weight: 600; color: var(--txt-dim); }
+  .tl-badge {
+    font-size: 8px; font-weight: 800; padding: 1px 4px; border-radius: 3px; flex-shrink: 0;
+  }
+  .tl-badge.adler-goal { color: var(--home); background: rgba(0,102,204,0.15); }
+  .tl-badge.opp-goal { color: var(--away); background: rgba(204,0,0,0.15); }
+  .tl-badge.penalty { color: #cc9900; background: rgba(204,153,0,0.12); }
+  .tl-secondary { font-size: 9px; color: var(--txt-dim); font-style: italic; margin-top: 1px; }
+  .tl-empty { text-align: center; padding: 16px; color: var(--txt-dim); font-size: 11px; }
 `;
 
 customElements.define('adler-mannheim-scoreboard', AdlerMannheimScoreboard);

@@ -95,12 +95,14 @@
     let goalCount = 3;
     let cardEl = null;
 
+    function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
     function buildHass(mode) {
       const s = {};
       const none = { state: 'None', attributes: {} };
-      s['sensor.adler_mannheim_next_game'] = MOCK_NEXT;
-      s['sensor.adler_mannheim_last_game'] = MOCK_RESULT;
-      s['sensor.adler_mannheim_current_game'] = mode === 'live' ? MOCK_LIVE : none;
+      s['sensor.adler_mannheim_next_game'] = clone(MOCK_NEXT);
+      s['sensor.adler_mannheim_last_game'] = clone(MOCK_RESULT);
+      s['sensor.adler_mannheim_current_game'] = mode === 'live' ? clone(MOCK_LIVE) : none;
       if (mode === 'standby') { s['sensor.adler_mannheim_next_game'] = none; s['sensor.adler_mannheim_last_game'] = none; }
       if (mode === 'next') s['sensor.adler_mannheim_last_game'] = none;
       return { states: s };
