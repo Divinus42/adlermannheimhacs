@@ -1,7 +1,7 @@
 {
   "name": "Adler Mannheim",
   "content_in_root": false,
-  "domains": ["sensor"],
+  "domains": ["sensor", "binary_sensor"],
   "iot_class": "cloud_polling",
   "render_readme": true
 }
