@@ -36,6 +36,9 @@ async def async_setup_entry(
         AdlerMannheimGoalsSensor(coordinator, "adler_goals", "Adler Tore", is_adler=True),
         AdlerMannheimGoalsSensor(coordinator, "opponent_goals", "Gegner Tore", is_adler=False),
         AdlerMannheimGoalAlertSensor(coordinator),
+        AdlerMannheimSeasonSensor(coordinator),
+        AdlerMannheimPlayoffSensor(coordinator),
+        AdlerMannheimGameStatsSensor(coordinator),
     ])
 
 
@@ -401,3 +404,111 @@ class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
                 attrs["away_team"] = game.get("awayteam")
 
         return attrs
+
+
+class AdlerMannheimSeasonSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the season record (W-L-OTL)."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Saison"
+        self._attr_unique_id = "adler_mannheim_season"
+        self._attr_icon = "mdi:chart-bar"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_season"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.coordinator.data:
+            return None
+        stats = self.coordinator.data.get("season_stats")
+        if not stats:
+            return None
+        return f"{stats['wins']}W-{stats['losses']}L-{stats['otl']}OTL"
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        stats = self.coordinator.data.get("season_stats")
+        if not stats:
+            return None
+        return {
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "otl": stats["otl"],
+            "points": stats["points"],
+            "games_played": stats["games_played"],
+            "goals_for": stats["goals_for"],
+            "goals_against": stats["goals_against"],
+            "goal_diff": stats["goal_diff"],
+            "home_record": stats["home_record"],
+            "away_record": stats["away_record"],
+            "streak": stats["streak"],
+            "last_5": stats["last_5"],
+            "win_pct": stats["win_pct"],
+        }
+
+
+class AdlerMannheimPlayoffSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the current playoff series status."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Playoff"
+        self._attr_unique_id = "adler_mannheim_playoff"
+        self._attr_icon = "mdi:trophy"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_playoff"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.coordinator.data:
+            return None
+        series = self.coordinator.data.get("playoff_series")
+        if not series:
+            return "Keine Playoffs"
+        return f"Adler {series['adler_wins']}:{series['opp_wins']} {series['opponent']}"
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        series = self.coordinator.data.get("playoff_series")
+        if not series:
+            return None
+        return {
+            "opponent": series["opponent"],
+            "adler_wins": series["adler_wins"],
+            "opponent_wins": series["opp_wins"],
+            "best_of": series["best_of"],
+            "is_active": series["is_active"],
+            "games": series["games"],
+        }
+
+
+class AdlerMannheimGameStatsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing detailed game statistics (shots, faceoffs, etc.)."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Spielstatistik"
+        self._attr_unique_id = "adler_mannheim_game_stats"
+        self._attr_icon = "mdi:chart-line"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_game_stats"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.coordinator.data:
+            return None
+        stats = self.coordinator.data.get("game_stats")
+        if not stats:
+            return None
+        return stats.get("status", "idle")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("game_stats")

@@ -14,25 +14,25 @@ from .coordinator import AdlerMannheimCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "binary_sensor"]
 
-CARD_SOURCE = Path(__file__).parent / "www" / "scoreboard-card.js"
-CARD_FILENAME = "adler-mannheim-scoreboard.js"
+CARD_DIR = Path(__file__).parent / "www"
+CARDS = {
+    "scoreboard-card.js": "adler-mannheim-scoreboard.js",
+    "season-overview-card.js": "adler-season-overview.js",
+}
 
 
-def _install_card(hass: HomeAssistant) -> None:
-    """Copy the scoreboard card JS to /config/www/ so it's available at /local/."""
+def _install_cards(hass: HomeAssistant) -> None:
+    """Copy all card JS files to /config/www/ so they're available at /local/."""
     www_dir = Path(hass.config.path("www"))
     www_dir.mkdir(exist_ok=True)
 
-    target = www_dir / CARD_FILENAME
-
-    # Always overwrite to ensure the latest version is deployed
-    shutil.copy2(str(CARD_SOURCE), str(target))
-    _LOGGER.info(
-        "Scoreboard card installed: /local/%s",
-        CARD_FILENAME,
-    )
+    for source_name, target_name in CARDS.items():
+        source = CARD_DIR / source_name
+        if source.exists():
+            shutil.copy2(str(source), str(www_dir / target_name))
+            _LOGGER.info("Card installed: /local/%s", target_name)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -42,11 +42,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Install/update the scoreboard card JS file (once per HA start)
     if "card_installed" not in hass.data[DOMAIN]:
         try:
-            await hass.async_add_executor_job(_install_card, hass)
+            await hass.async_add_executor_job(_install_cards, hass)
         except Exception:  # noqa: BLE001
             _LOGGER.warning(
-                "Could not auto-install scoreboard card. "
-                "Copy scoreboard-card.js manually to /config/www/"
+                "Could not auto-install cards. "
+                "Copy JS files manually to /config/www/"
             )
         hass.data[DOMAIN]["card_installed"] = True
 
