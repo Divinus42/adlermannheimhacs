@@ -1,308 +1,499 @@
-const SOC_VERSION = '1.0.0';
+const CARD_VERSION = '3.0.0';
+
+const DEFAULT_ENTITIES = {
+  entity_season: 'sensor.adler_mannheim_season',
+  entity_competitions: 'sensor.adler_mannheim_competitions',
+  entity_standings: 'sensor.adler_mannheim_standings',
+  entity_playoff: 'sensor.adler_mannheim_playoff',
+  entity_scorer: 'sensor.adler_mannheim_top_scorer',
+  entity_goalie: 'sensor.adler_mannheim_goalie',
+};
+
+const RESULT_LABELS = {
+  W: 'S',
+  OTW: 'SV',
+  OTL: 'NV',
+  L: 'N',
+};
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function signed(value) {
+  const number = Number(value) || 0;
+  return number > 0 ? `+${number}` : String(number);
+}
 
 class AdlerSeasonOverview extends HTMLElement {
   constructor() {
     super();
-    this.attachShadow({ mode: 'open' });
     this._config = {};
     this._hass = null;
+    this._tab = 'form';
+    this._signature = '';
   }
 
   setConfig(config) {
-    this._config = config;
+    this._config = { ...DEFAULT_ENTITIES, ...(config || {}) };
+  }
+
+  static getStubConfig() {
+    return { ...DEFAULT_ENTITIES };
+  }
+
+  getCardSize() {
+    return 6;
   }
 
   set hass(hass) {
-    const prev = this._hass;
     this._hass = hass;
-    let changed = !prev;
-    if (!changed) {
-      for (const id of Object.keys(hass.states)) {
-        if (!id.startsWith('sensor.adler_mannheim')) continue;
-        const o = prev.states[id]; const n = hass.states[id];
-        if (!o || !n || o.state !== n.state || o.last_updated !== n.last_updated) { changed = true; break; }
-      }
-    }
-    if (changed) this._render();
+    this._render();
   }
 
-  getCardSize() { return 4; }
-  static getStubConfig() { return {}; }
-
-  _findEntity(prefix) {
-    if (!this._hass) return null;
-    for (const [id, s] of Object.entries(this._hass.states)) {
-      if (id.startsWith(prefix) && s.state && !['None','unavailable','unknown'].includes(s.state)) return s;
+  _state(key) {
+    if (!this._hass || !this._config[key]) {
+      return null;
     }
-    return null;
+    return this._hass.states[this._config[key]] || null;
+  }
+
+  _attrs(key) {
+    const state = this._state(key);
+    return state ? state.attributes || {} : {};
   }
 
   _render() {
-    if (!this._hass) return;
+    const season = this._state('entity_season');
+    if (!season) {
+      this.innerHTML = '<ha-card><div class="empty">Saisondaten nicht verfügbar</div></ha-card>';
+      return;
+    }
 
-    const season = this._findEntity('sensor.adler_mannheim_season');
-    const playoff = this._findEntity('sensor.adler_mannheim_playoff');
-    const stats = this._findEntity('sensor.adler_mannheim_game_stats');
+    const competitions = this._attrs('entity_competitions');
+    const signature = [
+      season.state,
+      competitions.games_played,
+      this._state('entity_standings') ? this._state('entity_standings').state : '',
+      this._tab,
+    ].join('|');
 
-    this.shadowRoot.innerHTML = `
+    if (signature === this._signature) {
+      return;
+    }
+    this._signature = signature;
+
+    this.innerHTML = `
       <ha-card>
-        <style>${SOC_STYLES}</style>
-        <div class="card">
-          <div class="header">
-            <span class="title">ADLER MANNHEIM</span>
-            <span class="subtitle">SAISON 2025/26</span>
-          </div>
-          ${season ? this._renderSeason(season.attributes) : '<div class="empty">Keine Saisondaten</div>'}
-          ${playoff ? this._renderPlayoff(playoff.attributes) : ''}
-          ${stats && stats.attributes ? this._renderStats(stats.attributes) : ''}
-        </div>
+        <style>${this._styles()}</style>
+        ${this._renderHeader()}
+        ${this._renderCompetitionTiles()}
+        ${this._renderTabs()}
+        <div class="tab-body">${this._renderTabBody()}</div>
       </ha-card>`;
+
+    this.querySelectorAll('[data-tab]').forEach((node) => {
+      node.addEventListener('click', () => {
+        this._tab = node.getAttribute('data-tab');
+        this._signature = '';
+        this._render();
+      });
+    });
   }
 
-  _renderSeason(a) {
-    const total = (a.wins || 0) + (a.losses || 0) + (a.otl || 0);
-    const wPct = total ? (a.wins / total * 100) : 0;
-    const lPct = total ? (a.losses / total * 100) : 0;
-    const oPct = total ? (a.otl / total * 100) : 0;
-
-    // Last 5 dots
-    const last5 = (a.last_5 || []).map(r => {
-      const cls = r === 'W' ? 'dot-w' : r === 'L' ? 'dot-l' : 'dot-otl';
-      return `<span class="result-dot ${cls}" title="${r}"></span>`;
-    }).join('');
+  _renderHeader() {
+    const seasonAttrs = this._attrs('entity_season');
+    const standings = this._state('entity_standings');
+    const rank = seasonAttrs.official_rank || (standings ? standings.state : null);
+    const standingsAttrs = this._attrs('entity_standings');
 
     return `
-      <div class="section">
-        <!-- Points + Record -->
-        <div class="top-row">
-          <div class="points-box">
-            <span class="points-num">${a.points || 0}</span>
-            <span class="points-label">PUNKTE</span>
-          </div>
-          <div class="record-box">
-            <div class="record-main">${a.wins || 0}S - ${a.losses || 0}N - ${a.otl || 0}V</div>
-            <div class="record-sub">${a.games_played || 0} Spiele</div>
-          </div>
-          <div class="streak-box">
-            <span class="streak-val">${a.streak || '-'}</span>
-            <span class="streak-label">STREAK</span>
-          </div>
+      <div class="head">
+        <div class="head-rank">
+          <span class="rank-value">${escapeHtml(rank || '?')}</span>
+          <span class="rank-label">Platz</span>
         </div>
-
-        <!-- W/L bar -->
-        <div class="wl-bar">
-          <div class="wl-seg wl-w" style="width:${wPct}%"></div>
-          <div class="wl-seg wl-otl" style="width:${oPct}%"></div>
-          <div class="wl-seg wl-l" style="width:${lPct}%"></div>
+        <div class="head-main">
+          <div class="head-title">DEL Hauptrunde</div>
+          <div class="head-sub">
+            ${escapeHtml(seasonAttrs.points ?? 0)} Punkte aus ${escapeHtml(seasonAttrs.games_played ?? 0)} Spielen
+          </div>
+          ${standingsAttrs.playoff_cut_legend
+            ? `<div class="head-note">${escapeHtml(standingsAttrs.playoff_cut_legend)}</div>`
+            : ''}
         </div>
-
-        <!-- Stats grid -->
-        <div class="stats-grid">
-          <div class="stat">
-            <span class="stat-val">${a.goals_for || 0}</span>
-            <span class="stat-label">Tore</span>
-          </div>
-          <div class="stat">
-            <span class="stat-val">${a.goals_against || 0}</span>
-            <span class="stat-label">Gegentore</span>
-          </div>
-          <div class="stat">
-            <span class="stat-val ${(a.goal_diff || 0) > 0 ? 'positive' : 'negative'}">${(a.goal_diff || 0) > 0 ? '+' : ''}${a.goal_diff || 0}</span>
-            <span class="stat-label">Differenz</span>
-          </div>
-          <div class="stat">
-            <span class="stat-val">${a.win_pct || 0}%</span>
-            <span class="stat-label">Siegquote</span>
-          </div>
-        </div>
-
-        <!-- Home/Away + Last 5 -->
-        <div class="bottom-row">
-          <div class="split">
-            <span class="split-icon">🏠</span>
-            <span class="split-val">${a.home_record || '-'}</span>
-          </div>
-          <div class="split">
-            <span class="split-icon">✈️</span>
-            <span class="split-val">${a.away_record || '-'}</span>
-          </div>
-          <div class="last5">
-            <span class="last5-label">FORM</span>
-            ${last5}
-          </div>
+        <div class="head-diff">
+          <span class="diff-value ${(seasonAttrs.goal_diff || 0) >= 0 ? 'good' : 'bad'}">
+            ${escapeHtml(signed(seasonAttrs.goal_diff))}
+          </span>
+          <span class="diff-label">${escapeHtml(seasonAttrs.goals_for ?? 0)}:${escapeHtml(seasonAttrs.goals_against ?? 0)}</span>
         </div>
       </div>`;
   }
 
-  _renderPlayoff(a) {
-    if (!a || !a.opponent) return '';
-    const wins_needed = Math.floor((a.best_of || 7) / 2) + 1;
-
-    // Progress dots
-    const adlerDots = Array.from({length: wins_needed}, (_, i) =>
-      `<span class="po-dot ${i < (a.adler_wins || 0) ? 'po-filled-a' : 'po-empty'}"></span>`
-    ).join('');
-    const oppDots = Array.from({length: wins_needed}, (_, i) =>
-      `<span class="po-dot ${i < (a.opponent_wins || 0) ? 'po-filled-o' : 'po-empty'}"></span>`
-    ).join('');
-
-    // Series games
-    const gamesHtml = (a.games || []).map((g, i) =>
-      `<span class="po-game ${g.won ? 'po-win' : 'po-loss'}" title="Spiel ${i+1}: ${g.score}">${g.score}</span>`
-    ).join('');
+  /* One tile per competition, so the CHL campaign shows up next to the league
+     instead of being dropped from the season numbers entirely. */
+  _renderCompetitionTiles() {
+    const competitions = this._attrs('entity_competitions').competitions || {};
+    const keys = Object.keys(competitions);
+    if (!keys.length) {
+      return '';
+    }
 
     return `
-      <div class="section po-section">
-        <div class="section-title">PLAYOFF · Best of ${a.best_of || 7}</div>
-        <div class="po-matchup">
-          <div class="po-team">
-            <span class="po-name po-a">ADLER</span>
-            <div class="po-dots">${adlerDots}</div>
-            <span class="po-score">${a.adler_wins || 0}</span>
-          </div>
-          <span class="po-vs">:</span>
-          <div class="po-team">
-            <span class="po-score">${a.opponent_wins || 0}</span>
-            <div class="po-dots">${oppDots}</div>
-            <span class="po-name po-o">${(a.opponent || '?').split(' ').pop()}</span>
-          </div>
-        </div>
-        ${gamesHtml ? `<div class="po-games">${gamesHtml}</div>` : ''}
+      <div class="tiles">
+        ${keys.map((key) => {
+          const entry = competitions[key];
+          return `
+            <div class="tile">
+              <div class="tile-title">${escapeHtml(entry.title || key)}</div>
+              <div class="tile-record">${escapeHtml(entry.record || '')}</div>
+              <div class="tile-meta">
+                ${escapeHtml(entry.goals_for ?? 0)}:${escapeHtml(entry.goals_against ?? 0)}
+                · ${escapeHtml(signed(entry.goal_diff))}
+              </div>
+            </div>`;
+        }).join('')}
       </div>`;
   }
 
-  _renderStats(a) {
-    if (!a.shots_adler && !a.shots_opponent) return '';
-
-    const bars = [
-      ['Schüsse', a.shots_adler || 0, a.shots_opponent || 0],
-      ['Faceoff %', a.faceoff_pct_adler || 0, a.faceoff_pct_opponent || 0],
-      ['Strafmin.', a.pim_adler || 0, a.pim_opponent || 0],
-      ['Saves', a.saves_adler || 0, a.saves_opponent || 0],
+  _renderTabs() {
+    const tabs = [
+      ['form', 'Form'],
+      ['table', 'Tabelle'],
+      ['players', 'Spieler'],
     ];
+    return `
+      <div class="tabs">
+        ${tabs.map(([key, label]) => `
+          <button class="tab ${this._tab === key ? 'active' : ''}" data-tab="${key}">
+            ${escapeHtml(label)}
+          </button>`).join('')}
+      </div>`;
+  }
 
-    const barsHtml = bars.map(([label, adler, opp]) => {
-      const total = (adler || 0) + (opp || 0);
-      const aPct = total ? (adler / total * 100) : 50;
-      return `
-        <div class="bar-row">
-          <span class="bar-val bar-val-a">${adler}</span>
-          <div class="bar-track">
-            <div class="bar-fill bar-a" style="width:${aPct}%"></div>
-          </div>
-          <span class="bar-label">${label}</span>
-          <div class="bar-track">
-            <div class="bar-fill bar-o" style="width:${100-aPct}%"></div>
-          </div>
-          <span class="bar-val bar-val-o">${opp}</span>
-        </div>`;
-    }).join('');
+  _renderTabBody() {
+    if (this._tab === 'table') {
+      return this._renderTable();
+    }
+    if (this._tab === 'players') {
+      return this._renderPlayers();
+    }
+    return this._renderForm();
+  }
 
-    const pp = `PP: ${a.powerplay_adler || '0/0'} vs ${a.powerplay_opponent || '0/0'}`;
-    const att = a.attendance ? `Zuschauer: ${a.attendance}` : '';
+  _renderForm() {
+    const competitions = this._attrs('entity_competitions');
+    const seasonAttrs = this._attrs('entity_season');
+    const results = (competitions.results || []).slice(-10).reverse();
+
+    const chips = (competitions.last_5 || seasonAttrs.last_5 || [])
+      .map((result) => `<span class="chip ${result.toLowerCase()}">${escapeHtml(RESULT_LABELS[result] || result)}</span>`)
+      .join('');
+
+    const rows = results.map((entry) => `
+      <div class="res-row">
+        <span class="res-badge ${entry.result.toLowerCase()}">${escapeHtml(RESULT_LABELS[entry.result] || entry.result)}</span>
+        <span class="res-opponent">${entry.is_home ? '' : '@ '}${escapeHtml(entry.opponent || '?')}</span>
+        <span class="res-comp">${escapeHtml(entry.competition || '')}</span>
+        <span class="res-score">${escapeHtml(entry.score || '')}</span>
+      </div>`).join('');
 
     return `
-      <div class="section">
-        <div class="section-title">SPIELSTATISTIK ${att ? `· ${att}` : ''}</div>
-        <div class="bars">${barsHtml}</div>
-        <div class="pp-line">${pp}</div>
+      <div class="form-head">
+        <span class="form-label">Letzte 5</span>
+        <span class="chips">${chips}</span>
+        <span class="streak">Serie ${escapeHtml(competitions.streak || seasonAttrs.streak || '-')}</span>
+      </div>
+      <div class="res-list">${rows || '<div class="empty">Keine Ergebnisse</div>'}</div>
+      <div class="split">
+        <div><span class="split-key">Heim</span><span class="split-val">${escapeHtml(seasonAttrs.home_record || '-')}</span></div>
+        <div><span class="split-key">Auswärts</span><span class="split-val">${escapeHtml(seasonAttrs.away_record || '-')}</span></div>
+        <div><span class="split-key">Siegquote</span><span class="split-val">${escapeHtml(seasonAttrs.win_pct ?? 0)}%</span></div>
       </div>`;
+  }
+
+  _renderTable() {
+    const standings = this._attrs('entity_standings');
+    const teams = standings.teams || [];
+    if (!teams.length) {
+      return '<div class="empty">Tabelle nicht verfügbar</div>';
+    }
+
+    const playoffCut = standings.playoff_cut || 0;
+    const qualificationCut = standings.qualification_cut || 0;
+
+    return `
+      <table class="table">
+        <thead>
+          <tr><th>#</th><th>Team</th><th>Sp</th><th>Diff</th><th>Pkt</th></tr>
+        </thead>
+        <tbody>
+          ${teams.map((team) => {
+            const classes = [
+              team.is_adler ? 'adler' : '',
+              playoffCut && team.rank <= playoffCut ? 'playoff' : '',
+              qualificationCut && team.rank > playoffCut && team.rank <= qualificationCut ? 'quali' : '',
+            ].filter(Boolean).join(' ');
+            return `
+              <tr class="${classes}">
+                <td class="t-rank">${escapeHtml(team.rank)}</td>
+                <td class="t-name">
+                  ${team.logo ? `<img class="t-logo" src="${escapeHtml(team.logo)}" alt="" onerror="this.remove()"/>` : ''}
+                  <span>${escapeHtml(team.short || team.name)}</span>
+                </td>
+                <td>${escapeHtml(team.games_played)}</td>
+                <td class="${team.goal_diff >= 0 ? 'good' : 'bad'}">${escapeHtml(signed(team.goal_diff))}</td>
+                <td class="t-points">${escapeHtml(team.points)}</td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      ${standings.updated ? `<div class="table-note">Stand ${escapeHtml(standings.updated)}</div>` : ''}`;
+  }
+
+  _renderPlayers() {
+    const scorerAttrs = this._attrs('entity_scorer');
+    const goalieAttrs = this._attrs('entity_goalie');
+    const scorers = (scorerAttrs.top_scorers || []).slice(0, 6);
+    const goalies = goalieAttrs.goalies || [];
+
+    if (!scorers.length && !goalies.length) {
+      return '<div class="empty">Spielerdaten nicht verfügbar</div>';
+    }
+
+    const scorerRows = scorers.map((player, index) => `
+      <div class="pl-row">
+        <span class="pl-pos">${index + 1}</span>
+        ${player.photo ? `<img class="pl-photo" src="${escapeHtml(player.photo)}" alt="" onerror="this.remove()"/>` : ''}
+        <span class="pl-name">
+          <span>${escapeHtml(player.name || '')}</span>
+          <span class="pl-meta">#${escapeHtml(player.jersey || '')} · ${escapeHtml(player.position || '')}</span>
+        </span>
+        <span class="pl-stat">${escapeHtml(player.points ?? 0)}<span class="pl-unit">P</span></span>
+        <span class="pl-sub">${escapeHtml(player.goals ?? 0)}T / ${escapeHtml(player.assists ?? 0)}A</span>
+      </div>`).join('');
+
+    const goalieRows = goalies.map((player) => `
+      <div class="pl-row">
+        ${player.photo ? `<img class="pl-photo" src="${escapeHtml(player.photo)}" alt="" onerror="this.remove()"/>` : ''}
+        <span class="pl-name">
+          <span>${escapeHtml(player.name || '')}</span>
+          <span class="pl-meta">#${escapeHtml(player.jersey || '')} · ${escapeHtml(player.gamesplayed ?? 0)} Spiele</span>
+        </span>
+        <span class="pl-stat">${escapeHtml(player.savepercentage ?? 0)}<span class="pl-unit">%</span></span>
+        <span class="pl-sub">GAA ${escapeHtml(player.goalsagainstaverage ?? 0)}</span>
+      </div>`).join('');
+
+    return `
+      ${scorerRows ? `<div class="pl-head">Topscorer</div><div class="pl-list">${scorerRows}</div>` : ''}
+      ${goalieRows ? `<div class="pl-head">Torhüter</div><div class="pl-list">${goalieRows}</div>` : ''}`;
+  }
+
+  _styles() {
+    return `
+      ha-card {
+        background: linear-gradient(160deg, #0a1628 0%, #06101d 100%);
+        color: #e8eef7;
+        padding: 12px;
+        overflow: hidden;
+      }
+      .empty { padding: 24px; text-align: center; color: #5f7794; font-size: 12px; }
+      .head {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #16283f;
+      }
+      .head-rank { text-align: center; }
+      .rank-value {
+        display: block;
+        font-family: monospace;
+        font-size: 30px;
+        font-weight: 700;
+        color: #ff4d4d;
+        line-height: 1;
+      }
+      .rank-label { font-size: 8px; letter-spacing: 0.14em; color: #5f7794; text-transform: uppercase; }
+      .head-title { font-size: 14px; font-weight: 700; }
+      .head-sub { font-size: 11px; color: #9fb8d4; margin-top: 2px; }
+      .head-note { font-size: 9px; color: #5f7794; margin-top: 2px; }
+      .head-diff { text-align: right; }
+      .diff-value { display: block; font-family: monospace; font-size: 17px; font-weight: 700; }
+      .diff-label { font-size: 10px; color: #7f93ad; }
+      .good { color: #4ade80; }
+      .bad { color: #f87171; }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .tile {
+        background: #0b1626;
+        border: 1px solid #16283f;
+        border-radius: 8px;
+        padding: 7px 8px;
+      }
+      .tile-title {
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #5f7794;
+      }
+      .tile-record { font-family: monospace; font-size: 15px; color: #ffcf3d; margin-top: 2px; }
+      .tile-meta { font-size: 9px; color: #7f93ad; margin-top: 1px; }
+      .tabs { display: flex; gap: 4px; margin-top: 12px; }
+      .tab {
+        flex: 1;
+        background: #0b1626;
+        border: 1px solid #16283f;
+        border-radius: 6px;
+        color: #7f93ad;
+        font-size: 11px;
+        padding: 6px 4px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .tab.active { background: #16283f; color: #e8eef7; border-color: #2b4466; }
+      .tab-body { margin-top: 10px; }
+      .form-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .form-label, .streak { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #5f7794; }
+      .streak { margin-left: auto; }
+      .chips { display: flex; gap: 3px; }
+      .chip {
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        font-size: 10px;
+        font-weight: 700;
+        background: #16283f;
+        color: #9fb8d4;
+      }
+      .chip.w { background: #14532d; color: #86efac; }
+      .chip.otw { background: #166534; color: #bbf7d0; }
+      .chip.otl { background: #713f12; color: #fde68a; }
+      .chip.l { background: #7f1d1d; color: #fca5a5; }
+      .res-list { display: flex; flex-direction: column; gap: 2px; }
+      .res-row {
+        display: grid;
+        grid-template-columns: 24px 1fr auto auto;
+        gap: 6px;
+        align-items: center;
+        font-size: 11px;
+        padding: 3px 0;
+        border-bottom: 1px solid rgba(22, 40, 63, 0.6);
+      }
+      .res-badge {
+        width: 20px;
+        height: 18px;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        font-size: 9px;
+        font-weight: 700;
+        background: #16283f;
+        color: #9fb8d4;
+      }
+      .res-badge.w { background: #14532d; color: #86efac; }
+      .res-badge.otw { background: #166534; color: #bbf7d0; }
+      .res-badge.otl { background: #713f12; color: #fde68a; }
+      .res-badge.l { background: #7f1d1d; color: #fca5a5; }
+      .res-opponent { color: #cfe0f3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .res-comp { font-size: 8px; color: #5f7794; letter-spacing: 0.08em; }
+      .res-score { font-family: monospace; color: #ffcf3d; }
+      .split {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid #16283f;
+      }
+      .split div { display: flex; flex-direction: column; align-items: center; }
+      .split-key { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: #5f7794; }
+      .split-val { font-family: monospace; font-size: 13px; color: #e8eef7; }
+      .table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      .table th {
+        font-size: 8px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #5f7794;
+        text-align: right;
+        padding: 3px 4px;
+        border-bottom: 1px solid #16283f;
+      }
+      .table th:nth-child(2) { text-align: left; }
+      .table td { padding: 3px 4px; text-align: right; color: #cfe0f3; }
+      .table tr.adler { background: rgba(255, 77, 77, 0.12); }
+      .table tr.adler .t-name span { color: #ff8080; font-weight: 700; }
+      .t-rank { color: #7f93ad; font-family: monospace; }
+      tr.playoff .t-rank { border-left: 2px solid #4ade80; }
+      tr.quali .t-rank { border-left: 2px solid #60a5fa; }
+      .t-name { text-align: left; display: flex; align-items: center; gap: 5px; }
+      .t-logo { width: 16px; height: 16px; object-fit: contain; }
+      .t-points { font-family: monospace; font-weight: 700; color: #ffcf3d; }
+      .table-note { font-size: 8px; color: #3d5570; margin-top: 6px; text-align: right; }
+      .pl-head {
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #5f7794;
+        margin: 8px 0 4px;
+      }
+      .pl-list { display: flex; flex-direction: column; gap: 3px; }
+      .pl-row {
+        display: grid;
+        grid-template-columns: auto auto 1fr auto auto;
+        gap: 6px;
+        align-items: center;
+        padding: 3px 0;
+        border-bottom: 1px solid rgba(22, 40, 63, 0.6);
+      }
+      .pl-pos { font-family: monospace; font-size: 10px; color: #5f7794; width: 12px; }
+      .pl-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: #16283f; }
+      .pl-name { display: flex; flex-direction: column; overflow: hidden; }
+      .pl-name > span:first-child {
+        font-size: 11px;
+        color: #e8eef7;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pl-meta { font-size: 8px; color: #5f7794; }
+      .pl-stat { font-family: monospace; font-size: 14px; color: #ffcf3d; }
+      .pl-unit { font-size: 8px; color: #7f93ad; margin-left: 1px; }
+      .pl-sub { font-size: 9px; color: #7f93ad; white-space: nowrap; }
+      @media (max-width: 400px) {
+        .res-comp { display: none; }
+        .pl-sub { display: none; }
+      }`;
   }
 }
 
-const SOC_STYLES = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  :host {
-    --home: #0066CC; --away: #CC0000; --otl: #cc9900;
-    --bg: #0e0e14; --card: #141420; --border: #1e1e2a;
-    --txt: #fff; --txt2: rgba(255,255,255,0.55); --txt3: rgba(255,255,255,0.28);
-  }
-  ha-card { background: var(--bg) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; overflow: hidden; }
-  .card { padding: 14px; font-family: 'Segoe UI',system-ui,sans-serif; }
-
-  .header { text-align: center; margin-bottom: 12px; }
-  .title { font-size: 13px; font-weight: 900; letter-spacing: 3px; color: var(--home); display: block; }
-  .subtitle { font-size: 9px; font-weight: 700; letter-spacing: 2px; color: var(--txt3); }
-
-  .section { background: var(--card); border-radius: 8px; padding: 10px; margin-bottom: 8px; border: 1px solid var(--border); }
-  .section:last-child { margin-bottom: 0; }
-  .section-title { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt3); margin-bottom: 8px; text-transform: uppercase; }
-
-  .empty { text-align: center; padding: 20px; color: var(--txt3); font-size: 11px; letter-spacing: 2px; }
-
-  /* Top row: Points + Record + Streak */
-  .top-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .points-box { text-align: center; flex: 0 0 auto; }
-  .points-num { font-size: 32px; font-weight: 900; color: var(--home); display: block; line-height: 1; text-shadow: 0 0 12px rgba(0,102,204,0.3); }
-  .points-label { font-size: 7px; font-weight: 800; letter-spacing: 2px; color: var(--txt3); }
-  .record-box { flex: 1; text-align: center; }
-  .record-main { font-size: 16px; font-weight: 900; color: var(--txt); letter-spacing: 1px; }
-  .record-sub { font-size: 9px; color: var(--txt3); }
-  .streak-box { text-align: center; flex: 0 0 auto; }
-  .streak-val { font-size: 20px; font-weight: 900; color: var(--txt); display: block; line-height: 1; }
-  .streak-label { font-size: 7px; font-weight: 800; letter-spacing: 2px; color: var(--txt3); }
-
-  /* W/L bar */
-  .wl-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; background: #1a1a2a; }
-  .wl-seg { height: 100%; transition: width 0.5s; }
-  .wl-w { background: var(--home); }
-  .wl-otl { background: var(--otl); }
-  .wl-l { background: var(--away); }
-
-  /* Stats grid */
-  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
-  .stat { text-align: center; padding: 6px 4px; background: rgba(255,255,255,0.02); border-radius: 6px; }
-  .stat-val { font-size: 16px; font-weight: 900; color: var(--txt); display: block; }
-  .stat-val.positive { color: #4caf50; }
-  .stat-val.negative { color: var(--away); }
-  .stat-label { font-size: 8px; color: var(--txt3); font-weight: 600; }
-
-  /* Bottom row */
-  .bottom-row { display: flex; align-items: center; gap: 8px; }
-  .split { display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.02); padding: 4px 8px; border-radius: 4px; }
-  .split-icon { font-size: 10px; }
-  .split-val { font-size: 11px; font-weight: 700; color: var(--txt2); }
-  .last5 { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-  .last5-label { font-size: 8px; font-weight: 700; color: var(--txt3); letter-spacing: 1px; }
-  .result-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .dot-w { background: var(--home); box-shadow: 0 0 4px rgba(0,102,204,0.4); }
-  .dot-l { background: var(--away); box-shadow: 0 0 4px rgba(204,0,0,0.4); }
-  .dot-otl { background: var(--otl); }
-
-  /* Playoff */
-  .po-section { border-color: rgba(0,102,204,0.3); }
-  .po-matchup { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 6px; }
-  .po-team { display: flex; align-items: center; gap: 6px; }
-  .po-name { font-size: 11px; font-weight: 800; letter-spacing: 1px; }
-  .po-a { color: var(--home); }
-  .po-o { color: var(--away); }
-  .po-score { font-size: 24px; font-weight: 900; color: var(--txt); }
-  .po-vs { font-size: 16px; font-weight: 400; color: var(--txt3); }
-  .po-dots { display: flex; gap: 4px; }
-  .po-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #333; }
-  .po-filled-a { background: var(--home); border-color: var(--home); box-shadow: 0 0 6px rgba(0,102,204,0.5); }
-  .po-filled-o { background: var(--away); border-color: var(--away); box-shadow: 0 0 6px rgba(204,0,0,0.5); }
-  .po-empty { background: transparent; }
-  .po-games { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
-  .po-game { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
-  .po-win { background: rgba(0,102,204,0.15); color: var(--home); }
-  .po-loss { background: rgba(204,0,0,0.15); color: var(--away); }
-
-  /* Game stats bars */
-  .bars { display: flex; flex-direction: column; gap: 4px; }
-  .bar-row { display: flex; align-items: center; gap: 4px; }
-  .bar-val { font-size: 11px; font-weight: 800; min-width: 28px; text-align: center; }
-  .bar-val-a { color: var(--home); }
-  .bar-val-o { color: var(--away); }
-  .bar-label { font-size: 8px; font-weight: 700; color: var(--txt3); min-width: 52px; text-align: center; letter-spacing: 0.5px; }
-  .bar-track { flex: 1; height: 8px; background: #1a1a2a; border-radius: 4px; overflow: hidden; }
-  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
-  .bar-a { background: var(--home); float: right; }
-  .bar-o { background: var(--away); }
-  .pp-line { font-size: 9px; color: var(--txt3); text-align: center; margin-top: 6px; }
-`;
-
 customElements.define('adler-season-overview', AdlerSeasonOverview);
+
 window.customCards = window.customCards || [];
-window.customCards.push({ type: 'adler-season-overview', name: 'Adler Mannheim Saison', description: 'Season Overview + Playoffs + Game Stats', preview: true });
-console.info(`%c ADLER-SEASON %c v${SOC_VERSION} `, 'background:#0066CC;color:#fff;font-weight:bold;padding:2px 8px;border-radius:4px 0 0 4px', 'background:#222;color:#fff;padding:2px 8px;border-radius:0 4px 4px 0');
+window.customCards.push({
+  type: 'adler-season-overview',
+  name: 'Adler Mannheim Saison',
+  description: `Saisonbilanz, Tabelle und Spielerwerte (v${CARD_VERSION})`,
+  preview: false,
+});

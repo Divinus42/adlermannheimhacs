@@ -1,7 +1,7 @@
 # Adler Mannheim - Home Assistant Integration
 
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/Divinus42/adlermannheimhacs/releases)
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/Divinus42/adlermannheimhacs/releases)
 
 Live-Spielstande, Saisonstatistiken und Playoff-Tracking der **Adler Mannheim** direkt in Home Assistant. Inklusive Dashboard-Cards im SAP Arena Videowuerfel-Design.
 
@@ -9,18 +9,24 @@ Live-Spielstande, Saisonstatistiken und Playoff-Tracking der **Adler Mannheim** 
 
 ## Features
 
-- **Live-Spielstaende** mit automatischer Erkennung (Polling alle 30s bei laufendem Spiel)
+- **Live-Spielstaende** mit automatischer Erkennung
+- **Echte Spieluhr** aus dem Vereins-Liveticker, die Karte zaehlt zwischen zwei Abfragen selbst weiter
+- **Laufende Strafzeiten** mit Rueckennummer und Restzeit auf der Anzeigetafel
 - **Tor-Alerts** als Events + Sensor fuer Automationen (nur Adler-Tore!)
-- **Saisonstatistik** mit W-L-OTL-Bilanz, Toren, Siegquote, Streak
+- **Komplette DEL-Tabelle** mit Playoff-Linien und markierter Adler-Zeile
+- **Bilanz je Wettbewerb**, DEL und CHL getrennt sowie eine Pflichtspiel-Gesamtbilanz
+- **Spielerwerte**: Topscorer, Torhueter mit Fangquote und GAA, Kader mit Verletztenliste
+- **Aufstellung** des Spielberichts, wer nominiert war, nach Position
+- **Spielstatistiken** (Schuesse, Schuesse daneben, Bully, Powerplay-Effizienz, Strafminuten, Paraden, pro Drittel)
+- **Spielumfeld**: Arena, Zuschauerzahl, Schiedsrichter, Spieltag, Tabellenplaetze, Ticket- und Livestreamlink
 - **Playoff-Tracker** mit Serien-Stand und Einzelergebnissen
-- **Spielstatistiken** (Schuesse, Faceoffs, Powerplay, Strafminuten)
 - **Binary Sensoren** fuer Spieltag, Spiel-Live, Adler-fuehrt
 - **2 Dashboard-Cards** die automatisch installiert werden:
   - **Scoreboard Card** im SAP Arena Videowuerfel-Design
-  - **Season Overview Card** mit Saison, Playoffs und Spielstatistiken
+  - **Season Overview Card** mit Wettbewerbs-Kacheln, Tabelle und Spielerwerten
 - **Spielzeitachse** mit allen Toren und Strafen klickbar im Scoreboard
 - **Countdown** zum naechsten Spiel
-- **Dynamisches Polling** - alle 30s live, alle 30min ohne Spiel
+- **Gestaffeltes Polling** mit eigener Sperrfrist pro Endpunkt, damit ein kurzer Live-Takt nicht die Tabelle und den Kader mitzieht
 
 ---
 
@@ -57,8 +63,8 @@ Die Dashboard-Cards werden **automatisch** nach `/config/www/` kopiert. Du musst
 
 | Ressource | URL | Typ |
 |-----------|-----|-----|
-| Scoreboard | `/local/adler-mannheim-scoreboard.js` | JavaScript-Modul |
-| Season Overview | `/local/adler-season-overview.js` | JavaScript-Modul |
+| Scoreboard | `/local/adler-mannheim-scoreboard.js?v=6` | JavaScript-Modul |
+| Season Overview | `/local/adler-season-overview.js?v=6` | JavaScript-Modul |
 
 ### Schritt 2: Cards hinzufuegen
 
@@ -98,6 +104,23 @@ type: custom:adler-season-overview
 | Saison | `sensor.adler_mannheim_season` | W-L-OTL Bilanz, Punkte, Tordifferenz |
 | Playoff | `sensor.adler_mannheim_playoff` | Serien-Stand, Gegner, Einzelergebnisse |
 | Spielstatistik | `sensor.adler_mannheim_game_stats` | Schuesse, Faceoffs, Powerplay, Saves |
+
+### Live- und Tabellen-Sensoren
+
+| Sensor | Entity-ID | Beschreibung |
+|--------|-----------|--------------|
+| Spieluhr | `sensor.adler_mannheim_clock` | Laufende Spielzeit aus dem Liveticker, Drittel, `elapsed_seconds` |
+| Tabelle | `sensor.adler_mannheim_standings` | Komplette DEL-Hauptrunde mit Playoff-Linien, Adler-Zeile separat |
+| Wettbewerbe | `sensor.adler_mannheim_competitions` | Bilanz je Wettbewerb (DEL, CHL, Playoffs) plus Pflichtspiel-Gesamtbilanz |
+
+### Spieler-Sensoren
+
+| Sensor | Entity-ID | Beschreibung |
+|--------|-----------|--------------|
+| Topscorer | `sensor.adler_mannheim_top_scorer` | Fuehrender Scorer plus Top 10 mit Toren, Assists, Punkten, Foto |
+| Torhueter | `sensor.adler_mannheim_goalie` | Fangquote, GAA, Shutouts, Eiszeit |
+| Kader | `sensor.adler_mannheim_roster` | Kader nach Position, Verletztenliste, Teamfoto |
+| Aufstellung | `sensor.adler_mannheim_lineup` | Wer im Spiel nominiert war, nach Position und Rueckennummer |
 
 ### Binary Sensoren
 

@@ -1,7 +1,7 @@
 {
   "domain": "adlermannheim",
   "name": "Adler Mannheim",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "codeowners": ["@divinus42"],
   "config_flow": true,
   "dependencies": [],

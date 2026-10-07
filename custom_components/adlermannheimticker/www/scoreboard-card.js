@@ -1,745 +1,1139 @@
-const CARD_VERSION = '6.0.0';
+const CARD_VERSION = '3.0.0';
+
+/* Period length in seconds. The API reports goal, penalty and ticker times as
+   time elapsed inside the period, counting up from 00:00, which the two
+   empty-net goals of a finished game confirm: they sit at 17:22 and 18:46 of
+   the third. The arena board counts the same period down, so the card derives
+   the remaining time from the elapsed value. */
+const PERIOD_SECONDS = 20 * 60;
+
+/* Minutes a penalty keeps a player in the box, by the label the API uses. */
+const PENALTY_MINUTES = {
+  '2 Min': 2,
+  '2+2 Min': 4,
+  '4 Min': 4,
+  '5 Min': 5,
+  '10 Min': 10,
+};
+
+const GOAL_TYPE_LABELS = {
+  ES: 'Even Strength',
+  PP: 'Powerplay',
+  SH: 'Unterzahl',
+  EN: 'Empty Net',
+  PS: 'Penalty',
+  SO: 'Shootout',
+};
+
+const DEFAULT_ENTITIES = {
+  entity: 'sensor.adler_mannheim_current_game',
+  entity_next: 'sensor.adler_mannheim_next_game',
+  entity_last: 'sensor.adler_mannheim_last_game',
+  entity_clock: 'sensor.adler_mannheim_clock',
+  entity_stats: 'sensor.adler_mannheim_game_stats',
+  entity_live: 'binary_sensor.adler_mannheim_game_live',
+};
+
+function pad(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatSeconds(totalSeconds) {
+  const safe = Math.max(0, Math.round(totalSeconds));
+  return `${pad(Math.floor(safe / 60))}:${pad(safe % 60)}`;
+}
+
+function parseClockToSeconds(text) {
+  if (!text) {
+    return null;
+  }
+  const parts = String(text).split(':');
+  if (parts.length !== 2) {
+    return null;
+  }
+  const minutes = Number(parts[0]);
+  const seconds = Number(parts[1]);
+  if (Number.isNaN(minutes) || Number.isNaN(seconds)) {
+    return null;
+  }
+  return minutes * 60 + seconds;
+}
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 class AdlerMannheimScoreboard extends HTMLElement {
   constructor() {
     super();
-    this.attachShadow({ mode: 'open' });
     this._config = {};
     this._hass = null;
-    this._countdownTimer = null;
-    this._lastGoalCount = -1;
-    this._goalAlertTimeout = null;
-    this._showingAlert = false;
-    this._alertGoal = null;
-    this._expandedPanel = null;  // 'last' or 'next'
+    this._expandedPanel = null;
+    this._goalOverlay = null;
+    this._goalOverlayPhase = 0;
+    this._knownGoalCount = null;
+    this._tickHandle = null;
+    this._lastRenderSignature = '';
   }
 
   setConfig(config) {
-    this._config = {
-      entity: config.entity || null,
-      entity_next: config.entity_next || null,
-      entity_last: config.entity_last || null,
-      ...config,
-    };
-    this._entityPatterns = {
-      entity: ['sensor.adler_mannheim_current_game', 'sensor.adler_mannheim_aktuelles_spiel'],
-      entity_next: ['sensor.adler_mannheim_next_game', 'sensor.adler_mannheim_nachstes_spiel', 'sensor.adler_mannheim_na_chstes_spiel'],
-      entity_last: ['sensor.adler_mannheim_last_game', 'sensor.adler_mannheim_letztes_spiel'],
-    };
+    this._config = { ...DEFAULT_ENTITIES, ...(config || {}) };
   }
 
-  connectedCallback() { this._startCountdown(); }
-  disconnectedCallback() { this._stopCountdown(); this._clearGoalAlert(); }
-
-  _startCountdown() {
-    this._stopCountdown();
-    this._countdownTimer = setInterval(() => {
-      const el = this.shadowRoot && this.shadowRoot.querySelector('.cd-time');
-      if (el && el.dataset.iso) el.textContent = this._calcCountdown(el.dataset.iso);
-    }, 30000);
+  static getStubConfig() {
+    return { ...DEFAULT_ENTITIES };
   }
-  _stopCountdown() { if (this._countdownTimer) { clearInterval(this._countdownTimer); this._countdownTimer = null; } }
 
-  _clearGoalAlert() {
-    if (this._goalAlertTimeout) { clearTimeout(this._goalAlertTimeout); this._goalAlertTimeout = null; }
-    this._showingAlert = false;
-    this._alertGoal = null;
+  getCardSize() {
+    return 8;
+  }
+
+  connectedCallback() {
+    this._startTicking();
+  }
+
+  disconnectedCallback() {
+    this._stopTicking();
   }
 
   set hass(hass) {
-    const prev = this._hass;
     this._hass = hass;
-
-    // Detect changes across ALL adler_mannheim sensors
-    let changed = !prev;
-    if (!changed) {
-      for (const id of Object.keys(hass.states)) {
-        if (!id.startsWith('sensor.adler_mannheim')) continue;
-        const o = prev.states[id]; const n = hass.states[id];
-        if (!o && !n) continue;
-        if (!o || !n) { changed = true; break; }
-        if (o.state !== n.state || o.last_updated !== n.last_updated) { changed = true; break; }
-      }
-    }
-
-    if (changed) {
-      this._discovered = null; // clear cache
-      this._detectGoalAlert();
-      this._render();
-    }
+    this._detectNewGoal();
+    this._render();
+    this._startTicking();
   }
 
-  getCardSize() { return 7; }
-  static getStubConfig() { return { entity: 'sensor.adler_mannheim_aktuelles_spiel' }; }
+  /* ── State access ────────────────────────────────── */
 
-  /* ── Entity helpers ── */
-  _isValidState(s) {
-    return s && s.state && !['None', 'unavailable', 'unknown', 'none'].includes(s.state);
+  _state(key) {
+    if (!this._hass || !this._config[key]) {
+      return null;
+    }
+    return this._hass.states[this._config[key]] || null;
   }
 
-  /**
-   * Find all Adler Mannheim sensor entities by scanning hass.states.
-   * Caches result per render cycle. Categorizes by 'status' attribute.
-   */
-  _discoverEntities() {
-    if (this._discovered) return this._discovered;
-
-    const found = { live: null, final: null, future: null };
-
-    // 1. Try explicit config first
-    for (const [key, statusKey] of [['entity','live'], ['entity_next','future'], ['entity_last','final']]) {
-      if (this._config[key]) {
-        const s = this._hass.states[this._config[key]];
-        if (this._isValidState(s)) found[statusKey] = s;
-      }
+  _game() {
+    const live = this._state('entity');
+    if (live && live.attributes && live.attributes.status === 'LIVE') {
+      return { state: live, mode: 'live' };
     }
-
-    // 2. Try known ID patterns
-    for (const [key, statusKey] of [['entity','live'], ['entity_next','future'], ['entity_last','final']]) {
-      if (found[statusKey]) continue;
-      for (const id of (this._entityPatterns[key] || [])) {
-        const s = this._hass.states[id];
-        if (this._isValidState(s)) { found[statusKey] = s; break; }
-      }
+    const next = this._state('entity_next');
+    if (next && next.attributes && next.attributes.game_id) {
+      return { state: next, mode: 'next' };
     }
-
-    // 3. Fallback: scan ALL states for adler_mannheim sensors by status attribute
-    if (!found.live || !found.final || !found.future) {
-      for (const [id, s] of Object.entries(this._hass.states)) {
-        if (!id.startsWith('sensor.adler_mannheim')) continue;
-        if (!this._isValidState(s)) continue;
-        const status = (s.attributes.status || '').toUpperCase();
-        if (!found.live && status === 'LIVE') found.live = s;
-        else if (!found.future && status === 'FUTURE') found.future = s;
-        else if (!found.final && status === 'FINAL') found.final = s;
-      }
+    const last = this._state('entity_last');
+    if (last && last.attributes && last.attributes.game_id) {
+      return { state: last, mode: 'final' };
     }
-
-    this._discovered = found;
-    return found;
-  }
-
-  _getMainGame() {
-    this._discovered = null; // reset cache for this render
-    const e = this._discoverEntities();
-
-    if (e.live) return { state: e.live, mode: 'live' };
-    if (e.future) return { state: e.future, mode: 'next' };
-    if (e.final) return { state: e.final, mode: 'result' };
     return null;
   }
 
-  _calcCountdown(iso) {
-    if (!iso) return '';
-    const diff = new Date(iso) - new Date();
-    if (diff <= 0) return 'JETZT';
-    const d = Math.floor(diff / 86400000);
-    const h = Math.floor((diff % 86400000) / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    if (d > 0) return `${d}T ${h}h ${m}m`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
+  /* ── Clock ───────────────────────────────────────── */
+
+  /* The sensor is polled every few seconds, so the card carries the clock
+     forward itself from the moment the state arrived. Without that the
+     displayed time would jump in steps as wide as the poll interval. */
+  _clock() {
+    const clockState = this._state('entity_clock');
+    if (!clockState) {
+      return null;
+    }
+
+    const attrs = clockState.attributes || {};
+    const elapsedAtUpdate = attrs.elapsed_seconds;
+    const period = attrs.period || null;
+
+    if (elapsedAtUpdate === null || elapsedAtUpdate === undefined) {
+      return { period, elapsedInPeriod: null, remaining: null, source: attrs.source };
+    }
+
+    let drift = 0;
+    if (attrs.running && clockState.last_updated) {
+      drift = (Date.now() - new Date(clockState.last_updated).getTime()) / 1000;
+      drift = Math.max(0, Math.min(drift, PERIOD_SECONDS));
+    }
+
+    const elapsedTotal = elapsedAtUpdate + drift;
+    const elapsedInPeriod = Math.min(
+      PERIOD_SECONDS,
+      elapsedTotal - (period ? (period - 1) * PERIOD_SECONDS : 0),
+    );
+
+    return {
+      period,
+      elapsedInPeriod,
+      remaining: PERIOD_SECONDS - elapsedInPeriod,
+      source: attrs.source,
+      interpolated: drift > 1,
+    };
   }
 
-  /* ══════════════════════════════════════
-     GOAL ALERT DETECTION
-     ══════════════════════════════════════ */
-  _detectGoalAlert() {
-    const e = this._discoverEntities();
-    const cur = e.live;
-    if (!cur) {
-      // No live game — reset everything
-      this._lastGoalCount = -1;
-      if (this._showingAlert) this._clearGoalAlert();
+  _startTicking() {
+    if (this._tickHandle) {
       return;
     }
-    const goals = cur.attributes.goals || [];
-    const count = goals.length;
-
-    // First load: seed, don't alert
-    if (this._lastGoalCount === -1) { this._lastGoalCount = count; return; }
-
-    if (count > this._lastGoalCount) {
-      // Check all new goals (there could be more than one if poll was slow)
-      for (let i = this._lastGoalCount; i < count; i++) {
-        const goal = goals[i];
-        if (goal.is_adler_goal) {
-          this._lastGoalCount = count;
-          this._triggerGoalAlert(goal, cur.attributes);
-          return; // show the latest Adler goal
-        }
+    this._tickHandle = window.setInterval(() => {
+      const game = this._game();
+      const needsClock = game && game.mode === 'live';
+      const needsCountdown = game && game.mode === 'next';
+      if (needsClock || needsCountdown || this._goalOverlay) {
+        this._paintVolatile();
       }
-      this._lastGoalCount = count;
-    } else {
-      this._lastGoalCount = count;
+    }, 1000);
+  }
+
+  _stopTicking() {
+    if (this._tickHandle) {
+      window.clearInterval(this._tickHandle);
+      this._tickHandle = null;
     }
   }
 
-  _triggerGoalAlert(goal, gameAttrs) {
-    this._clearGoalAlert();
-    this._showingAlert = true;
-    this._alertGoal = { ...goal, home_team: gameAttrs.home_team, away_team: gameAttrs.away_team,
-      score_home: gameAttrs.score_home, score_away: gameAttrs.score_away };
+  /* Repaint only the parts that move every second, so a running clock does
+     not rebuild the whole card and kill the goal animation mid-flight. */
+  _paintVolatile() {
+    const clockNode = this.querySelector('[data-role="clock"]');
+    if (clockNode) {
+      const clock = this._clock();
+      clockNode.textContent = clock && clock.remaining !== null
+        ? formatSeconds(clock.remaining)
+        : clockNode.textContent;
+    }
 
-    // Phase 1: "TOOOR!" for 3 seconds, then Phase 2: scorer for 6 seconds
-    this._render();
+    const countdownNodes = this.querySelectorAll('[data-countdown]');
+    countdownNodes.forEach((node) => {
+      node.textContent = this._countdown(node.getAttribute('data-countdown')) || '';
+    });
 
-    this._goalAlertTimeout = setTimeout(() => {
-      // Transition to phase 2 (scorer)
-      const overlay = this.shadowRoot.querySelector('.goal-overlay');
-      if (overlay) {
-        overlay.classList.remove('phase1');
-        overlay.classList.add('phase2');
+    const penaltyBoxes = this.querySelectorAll('[data-role="penalties"]');
+    if (penaltyBoxes.length) {
+      const active = this._activePenalties();
+      penaltyBoxes.forEach((node) => {
+        const side = node.getAttribute('data-side');
+        node.innerHTML = this._renderPenaltyBox(
+          active.filter((entry) => (side === 'adler') === entry.isAdler),
+        );
+      });
+    }
+  }
+
+  _countdown(iso) {
+    if (!iso) {
+      return null;
+    }
+    const target = new Date(iso).getTime();
+    if (Number.isNaN(target)) {
+      return null;
+    }
+    let delta = Math.floor((target - Date.now()) / 1000);
+    if (delta <= 0) {
+      return 'jetzt';
+    }
+    const days = Math.floor(delta / 86400);
+    delta -= days * 86400;
+    const hours = Math.floor(delta / 3600);
+    delta -= hours * 3600;
+    const minutes = Math.floor(delta / 60);
+    const seconds = delta - minutes * 60;
+
+    if (days > 0) {
+      return `${days}d ${hours}h ${pad(minutes)}m`;
+    }
+    if (hours > 0) {
+      return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+    }
+    return `${pad(minutes)}:${pad(seconds)}`;
+  }
+
+  /* ── Penalties ───────────────────────────────────── */
+
+  /* A penalty is in force from the second it was handed out until its minutes
+     are served, both measured inside the same period, so the boxes show what
+     the arena shows instead of staying empty. */
+  _activePenalties() {
+    const game = this._game();
+    if (!game || game.mode !== 'live') {
+      return [];
+    }
+
+    const clock = this._clock();
+    if (!clock || clock.elapsedInPeriod === null || !clock.period) {
+      return [];
+    }
+
+    const penalties = (game.state.attributes || {}).penalties || [];
+    const active = [];
+
+    penalties.forEach((penalty) => {
+      if (penalty.period !== clock.period) {
+        return;
       }
+      const startSeconds = parseClockToSeconds(penalty.time);
+      if (startSeconds === null) {
+        return;
+      }
+      const minutes = PENALTY_MINUTES[penalty.minutes] || 2;
+      const endSeconds = startSeconds + minutes * 60;
+      if (clock.elapsedInPeriod < startSeconds || clock.elapsedInPeriod >= endSeconds) {
+        return;
+      }
+      active.push({
+        player: penalty.player,
+        jersey: penalty.player_jersey,
+        infraction: penalty.infraction,
+        isAdler: Boolean(penalty.is_adler),
+        remaining: endSeconds - clock.elapsedInPeriod,
+      });
+    });
 
-      this._goalAlertTimeout = setTimeout(() => {
-        // Dismiss
-        this._showingAlert = false;
-        this._alertGoal = null;
+    return active.sort((a, b) => a.remaining - b.remaining);
+  }
+
+  _renderPenaltyBox(entries) {
+    if (!entries.length) {
+      return '<div class="straf-empty">&ndash;&ndash;:&ndash;&ndash;</div>';
+    }
+    return entries
+      .slice(0, 2)
+      .map((entry) => `
+        <div class="straf-entry">
+          <span class="straf-jersey">#${escapeHtml(entry.jersey || '?')}</span>
+          <span class="straf-clock">${formatSeconds(entry.remaining)}</span>
+        </div>`)
+      .join('');
+  }
+
+  /* ── Goal overlay ────────────────────────────────── */
+
+  _detectNewGoal() {
+    const game = this._game();
+    if (!game || game.mode !== 'live') {
+      this._knownGoalCount = null;
+      this._goalOverlay = null;
+      return;
+    }
+
+    const goals = (game.state.attributes || {}).goals || [];
+    const adlerGoals = goals.filter((goal) => goal.is_adler_goal);
+
+    if (this._knownGoalCount === null) {
+      this._knownGoalCount = adlerGoals.length;
+      return;
+    }
+
+    if (adlerGoals.length > this._knownGoalCount) {
+      this._knownGoalCount = adlerGoals.length;
+      this._goalOverlay = adlerGoals[adlerGoals.length - 1];
+      this._goalOverlayPhase = 1;
+      window.setTimeout(() => {
+        this._goalOverlayPhase = 2;
         this._render();
-      }, 6000);
-    }, 3000);
+      }, 3000);
+      window.setTimeout(() => {
+        this._goalOverlay = null;
+        this._goalOverlayPhase = 0;
+        this._render();
+      }, 9000);
+    }
   }
 
-  _togglePanel(panel) {
-    this._expandedPanel = this._expandedPanel === panel ? null : panel;
-    this._render();
-  }
+  /* ── Rendering ───────────────────────────────────── */
 
-  /* ── Main render ── */
   _render() {
-    if (!this._hass) return;
-    const main = this._getMainGame();
+    const game = this._game();
+    const signature = this._signature(game);
+    if (signature === this._lastRenderSignature) {
+      this._paintVolatile();
+      return;
+    }
+    this._lastRenderSignature = signature;
 
-    this.shadowRoot.innerHTML = `
+    const body = game ? this._renderScoreboard(game) : this._renderStandby();
+
+    this.innerHTML = `
       <ha-card>
-        <style>${STYLES}</style>
-        <div class="cube">
-          ${main ? this._renderScoreboard(main) : this._renderStandby()}
-          ${this._renderDetails()}
-          ${this._showingAlert ? this._renderGoalOverlay() : ''}
-        </div>
+        <style>${this._styles()}</style>
+        ${this._goalOverlay ? this._renderGoalOverlay() : ''}
+        ${body}
+        ${this._renderDetails(game)}
       </ha-card>`;
 
-    // Attach click listeners for expandable panels
-    const sr = this.shadowRoot;
-    const nextCard = sr.querySelector('.next-card');
-    if (nextCard) nextCard.addEventListener('click', () => this._togglePanel('next'));
-    const lastCard = sr.querySelector('.last-card');
-    if (lastCard) lastCard.addEventListener('click', () => this._togglePanel('last'));
+    this.querySelectorAll('[data-panel]').forEach((node) => {
+      node.addEventListener('click', () => {
+        const panel = node.getAttribute('data-panel');
+        this._expandedPanel = this._expandedPanel === panel ? null : panel;
+        this._lastRenderSignature = '';
+        this._render();
+      });
+    });
+
+    this._paintVolatile();
   }
 
-  /* ══════════════════════════════════════
-     GOAL ALERT OVERLAY
-     ══════════════════════════════════════ */
-  _renderGoalOverlay() {
-    const g = this._alertGoal;
-    if (!g) return '';
-    const scorer = g.scorer || 'TOR';
-    const jersey = g.scorer_jersey ? `#${g.scorer_jersey}` : '';
-    const photo = g.scorer_photo || '';
-    const assists = [g.assist1, g.assist2].filter(Boolean).join(', ');
-    const score = `${g.score_home ?? '?'} : ${g.score_away ?? '?'}`;
-
-    return `
-      <div class="goal-overlay phase1">
-        <!-- Phase 1: TOOOR! -->
-        <div class="alert-phase1">
-          <div class="alert-siren">&#x1F6A8;</div>
-          <div class="alert-tor">TOOOR!</div>
-          <div class="alert-score">${score}</div>
-        </div>
-        <!-- Phase 2: Scorer details -->
-        <div class="alert-phase2">
-          ${photo ? `<img class="alert-photo" src="${photo}" alt="${scorer}" onerror="this.style.display='none'"/>` : ''}
-          <div class="alert-info">
-            <div class="alert-label">TORSCHÜTZE</div>
-            <div class="alert-name">${scorer}</div>
-            ${jersey ? `<div class="alert-jersey">${jersey}</div>` : ''}
-            ${assists ? `<div class="alert-assists">Assists: ${assists}</div>` : ''}
-            <div class="alert-time">${g.time || ''} · ${g.period ? g.period + '. Drittel' : ''}</div>
-            <div class="alert-score2">${score}</div>
-          </div>
-        </div>
-      </div>`;
+  _signature(game) {
+    if (!game) {
+      return 'standby';
+    }
+    const attrs = game.state.attributes || {};
+    const stats = (this._state('entity_stats') || {}).attributes || {};
+    return [
+      game.mode,
+      attrs.game_id,
+      attrs.score_home,
+      attrs.score_away,
+      (attrs.goals || []).length,
+      (attrs.penalties || []).length,
+      stats.shots_adler,
+      stats.shots_opponent,
+      (this._clock() || {}).period,
+      this._expandedPanel,
+      this._goalOverlayPhase,
+    ].join('|');
   }
 
   _renderStandby() {
     return `
       <div class="screen standby">
-        <div class="panel"><div class="standby-text">KEINE SPIELDATEN</div></div>
-        <div class="led-ring"><span class="led-text">ADLER MANNHEIM.DE</span></div>
+        <div class="panel">
+          <div class="standby-text">KEINE SPIELDATEN</div>
+        </div>
+        <div class="led-ring"><span class="led-text">ADLER MANNHEIM</span></div>
       </div>`;
   }
 
-  /* ══════════════════════════════════════
-     SCOREBOARD
-     ══════════════════════════════════════ */
-  _renderScoreboard({ state, mode }) {
-    const a = state.attributes;
-    const isLive = mode === 'live';
-    const isNext = mode === 'next';
-    const homeScore = a.score_home ?? 0;
-    const awayScore = a.score_away ?? 0;
-    const homeShort = (a.home_team_short || (a.home_team || '???').substring(0, 3)).toUpperCase();
-    const awayShort = (a.away_team_short || (a.away_team || '???').substring(0, 3)).toUpperCase();
+  _renderGoalOverlay() {
+    const goal = this._goalOverlay;
+    const assists = [goal.assist1, goal.assist2].filter(Boolean).join(' · ');
+    if (this._goalOverlayPhase === 1) {
+      return `
+        <div class="goal-overlay phase1">
+          <div class="goal-shout">TOOOR!</div>
+        </div>`;
+    }
+    return `
+      <div class="goal-overlay phase2">
+        ${goal.scorer_photo ? `<img class="goal-photo" src="${escapeHtml(goal.scorer_photo)}" alt="" onerror="this.remove()"/>` : ''}
+        <div class="goal-scorer">#${escapeHtml(goal.scorer_jersey || '')} ${escapeHtml(goal.scorer || '')}</div>
+        ${assists ? `<div class="goal-assists">Vorlage ${escapeHtml(assists)}</div>` : ''}
+        <div class="goal-meta">${escapeHtml(goal.time || '')} · ${escapeHtml(GOAL_TYPE_LABELS[goal.type] || goal.type || '')}</div>
+      </div>`;
+  }
 
-    let currentPeriod = 1;
-    if (a.period_3) currentPeriod = 3;
-    else if (a.period_2) currentPeriod = 3;
-    else if (a.period_1) currentPeriod = 2;
-    if (a.overtime) currentPeriod = 4;
-    if (isLive && a.goals && a.goals.length > 0) {
-      const lp = a.goals[a.goals.length - 1].period;
-      if (lp && lp > currentPeriod) currentPeriod = lp;
+  _renderScoreboard(game) {
+    const attrs = game.state.attributes || {};
+    const stats = (this._state('entity_stats') || {}).attributes || {};
+    const clock = this._clock();
+    const isLive = game.mode === 'live';
+    const isNext = game.mode === 'next';
+
+    const homeShort = (attrs.home_team_short || (attrs.home_team || '???').slice(0, 3)).toUpperCase();
+    const awayShort = (attrs.away_team_short || (attrs.away_team || '???').slice(0, 3)).toUpperCase();
+
+    const periodScores = [];
+    for (let index = 1; index <= 3; index += 1) {
+      const value = attrs[`period_${index}`];
+      periodScores.push(value ? value.split(':').map(Number) : null);
+    }
+    let periodLabel = clock && clock.period ? clock.period : 1;
+    if (attrs.overtime) {
+      periodScores.push(attrs.overtime.split(':').map(Number));
+      periodLabel = 'V';
+    }
+    if (attrs.shootout) {
+      periodLabel = 'P';
     }
 
-    const pScores = [];
-    for (let i = 1; i <= 3; i++) {
-      const p = a[`period_${i}`];
-      if (p) { const [h, aw] = p.split(':').map(Number); pScores.push([h, aw]); }
-      else pScores.push(null);
+    let clockText = 'ENDE';
+    if (isLive) {
+      clockText = clock && clock.remaining !== null ? formatSeconds(clock.remaining) : '--:--';
+    } else if (isNext) {
+      clockText = game.state.state || '';
     }
-    let hasOT = false;
-    if (a.overtime) { const [h, aw] = a.overtime.split(':').map(Number); pScores.push([h, aw]); hasOT = true; }
+
+    const header = [
+      attrs.competition_title || attrs.competition,
+      attrs.matchday ? `${attrs.matchday}. Spieltag` : null,
+      attrs.arena,
+    ].filter(Boolean).join(' · ');
 
     return `
-      <div class="screen ${mode}">
+      <div class="screen ${game.mode}">
+        ${header ? `<div class="board-header">${escapeHtml(header)}</div>` : ''}
         <div class="panel">
           <div class="row-top">
-            <div class="straf-col"><div class="straf-title">STRAFZEIT</div><div class="straf-box"></div></div>
-            <div class="clock-col"><div class="team-row">
-              <span class="team-name home-c">${homeShort}</span>
-              <span class="clock">${isLive ? '20:00' : isNext ? (state.state || '') : 'ENDE'}</span>
-              <span class="team-name away-c">${awayShort}</span>
-            </div></div>
-            <div class="straf-col"><div class="straf-title">STRAFZEIT</div><div class="straf-box"></div></div>
+            <div class="straf-col">
+              <div class="straf-title">STRAFZEIT</div>
+              <div class="straf-box" data-role="penalties" data-side="${this._sideKey(attrs, 'home')}"></div>
+            </div>
+            <div class="clock-col">
+              <div class="team-row">
+                <span class="team-name">${escapeHtml(homeShort)}${this._rankBadge(attrs.rank_home)}</span>
+                <span class="clock" data-role="clock">${escapeHtml(clockText)}</span>
+                <span class="team-name">${escapeHtml(awayShort)}${this._rankBadge(attrs.rank_away)}</span>
+              </div>
+              ${isLive && clock ? `<div class="clock-source">${clock.source === 'ticker' ? 'Liveticker' : 'Drittel laut Spielstand'}</div>` : ''}
+            </div>
+            <div class="straf-col">
+              <div class="straf-title">STRAFZEIT</div>
+              <div class="straf-box" data-role="penalties" data-side="${this._sideKey(attrs, 'away')}"></div>
+            </div>
           </div>
+
           <div class="row-score">
-            <div class="pblocks-col">${this._renderBlocks(pScores, 0)}</div>
+            <div class="pblocks-col">${this._renderBlocks(periodScores, 0)}</div>
             <div class="score-col">
-              ${isNext ? '<div class="future-vs">VS</div>'
+              ${isNext
+                ? '<div class="future-vs">VS</div>'
                 : `<div class="score-display">
-                     <span class="score-digit">${homeScore}</span>
-                     <span class="period-circle ${isLive ? 'active' : ''}">${hasOT ? 'V' : currentPeriod}</span>
-                     <span class="score-digit">${awayScore}</span>
+                     <span class="score-digit">${escapeHtml(attrs.score_home ?? 0)}</span>
+                     <span class="period-circle ${isLive ? 'active' : ''}">${escapeHtml(periodLabel)}</span>
+                     <span class="score-digit">${escapeHtml(attrs.score_away ?? 0)}</span>
                    </div>`}
             </div>
-            <div class="pblocks-col">${this._renderBlocks(pScores, 1)}</div>
+            <div class="pblocks-col">${this._renderBlocks(periodScores, 1)}</div>
           </div>
-          ${isLive ? this._renderGoalTicker(a) : ''}
+
+          ${isLive || game.mode === 'final' ? this._renderShotRow(attrs, stats) : ''}
+          ${isLive ? this._renderLastGoal(attrs) : ''}
         </div>
-        <div class="led-ring ${isLive ? 'glow' : ''}"><span class="led-text">ADLER MANNHEIM.DE</span></div>
+        <div class="led-ring ${isLive ? 'glow' : ''}">
+          <span class="led-text">${escapeHtml(attrs.home_team || '')} vs ${escapeHtml(attrs.away_team || '')}</span>
+        </div>
       </div>`;
   }
 
-  _renderBlocks(pScores, teamIdx) {
-    const side = teamIdx === 0 ? 'home' : 'away';
+  /* The penalty boxes sit left and right of the clock, home on the left. The
+     box therefore needs to know which of the two sides is Adler. */
+  _sideKey(attrs, position) {
+    const adlerIsHome = attrs.is_home === true;
+    if (position === 'home') {
+      return adlerIsHome ? 'adler' : 'opponent';
+    }
+    return adlerIsHome ? 'opponent' : 'adler';
+  }
+
+  _rankBadge(rank) {
+    if (!rank) {
+      return '';
+    }
+    return `<span class="rank-badge">${escapeHtml(rank)}.</span>`;
+  }
+
+  _renderBlocks(periodScores, teamIndex) {
+    const count = Math.max(periodScores.length, 3);
     let html = '';
-    const count = Math.max(pScores.length, 3);
-    for (let i = 0; i < count && i < 4; i++) {
-      const p = pScores[i]; const val = p ? p[teamIdx] : null; const on = p !== null;
-      html += `<div class="led-block ${side} ${on ? 'on' : 'off'}"><span class="led-val">${val !== null ? val : ''}</span></div>`;
+    for (let index = 0; index < count && index < 4; index += 1) {
+      const entry = periodScores[index];
+      const value = entry ? entry[teamIndex] : null;
+      html += `
+        <div class="led-block ${entry ? 'on' : 'off'}">
+          <span class="led-val">${value !== null && value !== undefined ? escapeHtml(value) : ''}</span>
+        </div>`;
     }
     return html;
   }
 
-  _renderGoalTicker(a) {
-    const goals = a.goals;
-    if (!goals || !goals.length) return '';
-    const g = goals[goals.length - 1];
-    if (!g.scorer) return '';
-    const assists = [g.assist1, g.assist2].filter(Boolean).join(', ');
-    return `<div class="ticker">&#x1F6A8; <strong>${g.scorer}</strong>${assists ? ` · ${assists}` : ''} <span class="ticker-time">${g.time || ''}</span></div>`;
+  _renderShotRow(attrs, stats) {
+    if (stats.shots_adler === undefined) {
+      return '';
+    }
+    const adlerIsHome = attrs.is_home === true;
+    const homeShots = adlerIsHome ? stats.shots_adler : stats.shots_opponent;
+    const awayShots = adlerIsHome ? stats.shots_opponent : stats.shots_adler;
+    return `
+      <div class="shot-row">
+        <span class="shot-val">${escapeHtml(homeShots ?? 0)}</span>
+        <span class="shot-label">SCHÜSSE AUFS TOR</span>
+        <span class="shot-val">${escapeHtml(awayShots ?? 0)}</span>
+      </div>`;
   }
 
-  /* ══════════════════════════════════════
-     DETAILS PANEL
-     ══════════════════════════════════════ */
-  _renderDetails() {
-    const e = this._discoverEntities();
-    const nextEntity = e.future;
-    const lastEntity = e.final;
+  _renderLastGoal(attrs) {
+    const goals = attrs.goals || [];
+    if (!goals.length) {
+      return '';
+    }
+    const goal = goals[goals.length - 1];
+    if (!goal.scorer) {
+      return '';
+    }
+    const assists = [goal.assist1, goal.assist2].filter(Boolean).join(', ');
+    return `
+      <div class="ticker ${goal.is_adler_goal ? 'adler' : 'opponent'}">
+        <strong>${escapeHtml(goal.scorer)}</strong>${assists ? ` · ${escapeHtml(assists)}` : ''}
+        <span class="ticker-time">P${escapeHtml(goal.period || '')} ${escapeHtml(goal.time || '')}</span>
+      </div>`;
+  }
 
-    let nextHtml = '';
-    if (nextEntity) nextHtml = this._renderNextGame(nextEntity.attributes, nextEntity.state);
+  /* ── Detail panels ───────────────────────────────── */
 
-    let lastHtml = '';
-    if (lastEntity) lastHtml = this._renderLastGame(lastEntity.attributes);
+  _renderDetails(game) {
+    const next = this._state('entity_next');
+    const last = this._state('entity_last');
+    if (!next && !last) {
+      return '';
+    }
 
-    if (!nextHtml && !lastHtml) return '';
+    const cards = [];
+    if (next && next.attributes.game_id) {
+      cards.push(this._renderNextCard(next));
+    }
+    if (last && last.attributes.game_id) {
+      cards.push(this._renderLastCard(last));
+    }
+
+    let expanded = '';
+    if (this._expandedPanel === 'next' && next) {
+      expanded = this._renderNextExpanded(next.attributes);
+    } else if (this._expandedPanel === 'last' && last) {
+      expanded = this._renderTimeline(last.attributes);
+    } else if (this._expandedPanel === 'stats') {
+      expanded = this._renderStatsExpanded(game);
+    }
 
     return `
       <div class="details">
-        <div class="info-row">${nextHtml}${lastHtml}</div>
-        ${this._expandedPanel === 'next' && nextEntity ? this._renderNextExpanded(nextEntity.attributes) : ''}
-        ${this._expandedPanel === 'last' && lastEntity ? this._renderTimeline(lastEntity.attributes) : ''}
+        <div class="info-row">${cards.join('')}${this._renderStatsCard()}</div>
+        ${expanded}
       </div>`;
   }
 
-  _renderNextGame(a, state) {
-    const iso = a.match_start_iso || null;
-    const cd = this._calcCountdown(iso);
-    const opponent = a.opponent || a.away_team || '?';
-    const loc = a.is_home ? 'Heim' : 'Auswärts';
-    const exp = this._expandedPanel === 'next';
+  _renderNextCard(state) {
+    const attrs = state.attributes;
+    const expanded = this._expandedPanel === 'next';
     return `
-      <div class="info-card next-card clickable ${exp ? 'expanded' : ''}">
-        <div class="info-label">NÄCHSTES SPIEL <span class="expand-icon">${exp ? '▲' : '▼'}</span></div>
-        <div class="info-opponent">${opponent}</div>
-        <div class="info-meta">${state || ''} · ${loc}</div>
-        ${cd ? `<div class="cd-time" data-iso="${iso || ''}">${cd}</div>` : ''}
+      <div class="info-card clickable ${expanded ? 'expanded' : ''}" data-panel="next">
+        <div class="info-label">NÄCHSTES SPIEL <span class="expand-icon">${expanded ? '▲' : '▼'}</span></div>
+        <div class="info-opponent">${escapeHtml(attrs.opponent || '?')}</div>
+        <div class="info-meta">${escapeHtml(state.state || '')} · ${attrs.is_home ? 'Heim' : 'Auswärts'}</div>
+        <div class="cd-time" data-countdown="${escapeHtml(attrs.match_start_iso || '')}"></div>
       </div>`;
   }
 
-  _renderLastGame(a) {
-    const opponent = a.opponent || a.away_team || '?';
-    const loc = a.is_home ? 'Heim' : 'Auswärts';
-    const exp = this._expandedPanel === 'last';
+  _renderLastCard(state) {
+    const attrs = state.attributes;
+    const expanded = this._expandedPanel === 'last';
     return `
-      <div class="info-card last-card clickable ${exp ? 'expanded' : ''}">
-        <div class="info-label">LETZTES SPIEL <span class="expand-icon">${exp ? '▲' : '▼'}</span></div>
-        <div class="info-opponent">${opponent}</div>
-        <div class="last-score">${a.score_home ?? 0} : ${a.score_away ?? 0}</div>
-        <div class="info-meta">${a.match_start || ''} · ${loc}</div>
+      <div class="info-card clickable ${expanded ? 'expanded' : ''}" data-panel="last">
+        <div class="info-label">LETZTES SPIEL <span class="expand-icon">${expanded ? '▲' : '▼'}</span></div>
+        <div class="info-opponent">${escapeHtml(attrs.opponent || '?')}</div>
+        <div class="last-score">${escapeHtml(attrs.score_home ?? 0)} : ${escapeHtml(attrs.score_away ?? 0)}</div>
+        <div class="info-meta">${escapeHtml(attrs.match_start || '')} · ${attrs.is_home ? 'Heim' : 'Auswärts'}</div>
       </div>`;
   }
 
-  /* ── Next game expanded details ── */
-  _renderNextExpanded(a) {
-    const home = a.home_team || '?';
-    const away = a.away_team || '?';
-    const comp = a.competition || '';
-    const iso = a.match_start_iso || null;
-    const cd = this._calcCountdown(iso);
+  _renderStatsCard() {
+    const stats = this._state('entity_stats');
+    if (!stats || stats.attributes.shots_adler === undefined) {
+      return '';
+    }
+    const expanded = this._expandedPanel === 'stats';
+    const attrs = stats.attributes;
+    return `
+      <div class="info-card clickable ${expanded ? 'expanded' : ''}" data-panel="stats">
+        <div class="info-label">STATISTIK <span class="expand-icon">${expanded ? '▲' : '▼'}</span></div>
+        <div class="info-opponent">${escapeHtml(attrs.shots_adler ?? 0)} : ${escapeHtml(attrs.shots_opponent ?? 0)}</div>
+        <div class="info-meta">Schüsse · PP ${escapeHtml(attrs.powerplay_adler || '0/0')}</div>
+      </div>`;
+  }
+
+  _renderNextExpanded(attrs) {
+    const rows = [
+      ['Anpfiff', attrs.match_start],
+      ['Wettbewerb', attrs.competition_title || attrs.competition],
+      ['Spieltag', attrs.matchday],
+      ['Ort', attrs.arena || (attrs.is_home ? 'SAP Arena' : 'Auswärts')],
+      ['Tabellenplatz', attrs.rank_adler ? `${attrs.rank_adler}. gegen ${attrs.rank_opponent || '?'}.` : null],
+    ].filter((row) => row[1]);
 
     return `
       <div class="expanded-panel">
         <div class="exp-matchup">
           <div class="exp-team">
-            ${a.home_logo ? `<img class="exp-logo" src="${a.home_logo}" onerror="this.style.display='none'"/>` : ''}
-            <span class="exp-tname">${home}</span>
-            ${a.is_home === true ? '' : a.is_home === false ? '' : ''}
+            ${attrs.home_logo ? `<img class="exp-logo" src="${escapeHtml(attrs.home_logo)}" alt="" onerror="this.remove()"/>` : ''}
+            <span class="exp-tname">${escapeHtml(attrs.home_team || '?')}</span>
           </div>
           <div class="exp-vs">VS</div>
           <div class="exp-team">
-            ${a.away_logo ? `<img class="exp-logo" src="${a.away_logo}" onerror="this.style.display='none'"/>` : ''}
-            <span class="exp-tname">${away}</span>
+            ${attrs.away_logo ? `<img class="exp-logo" src="${escapeHtml(attrs.away_logo)}" alt="" onerror="this.remove()"/>` : ''}
+            <span class="exp-tname">${escapeHtml(attrs.away_team || '?')}</span>
           </div>
         </div>
-        <div class="exp-info-grid">
-          <div class="exp-info-item"><span class="exp-key">Anpfiff</span><span class="exp-val">${a.match_start || '?'}</span></div>
-          <div class="exp-info-item"><span class="exp-key">Countdown</span><span class="exp-val exp-cd">${cd || '?'}</span></div>
-          <div class="exp-info-item"><span class="exp-key">Wettbewerb</span><span class="exp-val">${comp}</span></div>
-          <div class="exp-info-item"><span class="exp-key">Ort</span><span class="exp-val">${a.is_home ? 'Heim (SAP Arena)' : 'Auswärts'}</span></div>
+        <div class="exp-grid">
+          ${rows.map(([key, value]) => `
+            <div class="exp-item">
+              <span class="exp-key">${escapeHtml(key)}</span>
+              <span class="exp-val">${escapeHtml(value)}</span>
+            </div>`).join('')}
+          <div class="exp-item">
+            <span class="exp-key">Countdown</span>
+            <span class="exp-val" data-countdown="${escapeHtml(attrs.match_start_iso || '')}"></span>
+          </div>
         </div>
+        ${attrs.link_ticketing ? `<a class="exp-link" href="${escapeHtml(attrs.link_ticketing)}" target="_blank" rel="noopener">Tickets</a>` : ''}
       </div>`;
   }
 
-  /* ── Last game timeline ── */
-  _renderTimeline(a) {
-    // Merge goals + penalties into one timeline, sorted by period then time
-    const events = [];
-
-    for (const g of (a.goals || [])) {
-      events.push({
-        period: g.period || 0,
-        time: g.time || '00:00',
-        type: g.is_adler_goal ? 'adler-goal' : 'opp-goal',
-        primary: g.scorer || '?',
-        jersey: g.scorer_jersey,
-        photo: g.scorer_photo,
-        secondary: [g.assist1, g.assist2].filter(Boolean).join(', '),
-        badge: g.type && g.type !== 'ES' ? g.type : null,
-      });
+  _renderStatsExpanded(game) {
+    const stats = this._state('entity_stats');
+    if (!stats) {
+      return '';
     }
+    const attrs = stats.attributes;
+    const rows = [
+      ['Schüsse aufs Tor', attrs.shots_adler, attrs.shots_opponent],
+      ['Schüsse daneben', attrs.shots_missed_adler, attrs.shots_missed_opponent],
+      ['Bully gewonnen %', attrs.faceoff_pct_adler, attrs.faceoff_pct_opponent],
+      ['Powerplay', attrs.powerplay_adler, attrs.powerplay_opponent],
+      ['Strafminuten', attrs.pim_adler, attrs.pim_opponent],
+      ['Paraden', attrs.saves_adler, attrs.saves_opponent],
+    ];
 
-    for (const p of (a.penalties || [])) {
-      events.push({
-        period: p.period || 0,
-        time: p.time || '00:00',
-        type: 'penalty',
-        primary: p.player || '?',
-        secondary: p.infraction || '',
-        badge: p.minutes || '2 Min',
-      });
-    }
-
-    // Sort by period, then by time
-    events.sort((a, b) => {
-      if (a.period !== b.period) return a.period - b.period;
-      return a.time.localeCompare(b.time);
-    });
-
-    if (!events.length) return '<div class="expanded-panel"><div class="tl-empty">Keine Ereignisse</div></div>';
-
-    // Group by period
-    let html = '';
-    let lastPeriod = 0;
-    for (const ev of events) {
-      if (ev.period !== lastPeriod) {
-        lastPeriod = ev.period;
-        html += `<div class="tl-period-header">${ev.period}. DRITTEL</div>`;
-      }
-
-      const dotClass = ev.type === 'adler-goal' ? 'dot-adler'
-        : ev.type === 'opp-goal' ? 'dot-opp' : 'dot-penalty';
-
-      html += `
-        <div class="tl-event ${ev.type}">
-          <div class="tl-time">${ev.time}</div>
-          <div class="tl-line"><div class="tl-dot ${dotClass}"></div></div>
-          <div class="tl-content">
-            <div class="tl-primary">
-              ${ev.photo ? `<img class="tl-photo" src="${ev.photo}" onerror="this.style.display='none'"/>` : ''}
-              <span>${ev.primary}${ev.jersey ? ` <span class="tl-jersey">#${ev.jersey}</span>` : ''}</span>
-              ${ev.badge ? `<span class="tl-badge ${ev.type}">${ev.badge}</span>` : ''}
-            </div>
-            ${ev.secondary ? `<div class="tl-secondary">${ev.type === 'penalty' ? ev.secondary : 'Assists: ' + ev.secondary}</div>` : ''}
-          </div>
-        </div>`;
-    }
-
-    // Summary
-    const adlerGoals = (a.goals || []).filter(g => g.is_adler_goal).length;
-    const oppGoals = (a.goals || []).filter(g => !g.is_adler_goal).length;
-    const totalPen = (a.penalties || []).length;
+    const meta = [
+      attrs.arena,
+      attrs.attendance ? `${attrs.attendance.toLocaleString('de-DE')} Zuschauer` : null,
+      (attrs.officials || []).length
+        ? `Schiedsrichter ${attrs.officials.filter((o) => o.role && o.role.startsWith('referee')).map((o) => o.name).join(', ')}`
+        : null,
+    ].filter(Boolean).join(' · ');
 
     return `
       <div class="expanded-panel">
-        <div class="tl-summary">
-          <span class="tl-sum-item"><span class="dot-adler-sm"></span> ${adlerGoals} Adler-Tore</span>
-          <span class="tl-sum-item"><span class="dot-opp-sm"></span> ${oppGoals} Gegentore</span>
-          <span class="tl-sum-item"><span class="dot-pen-sm"></span> ${totalPen} Strafen</span>
-        </div>
-        <div class="timeline">${html}</div>
+        <div class="cmp-head"><span>ADLER</span><span></span><span>GEGNER</span></div>
+        ${rows.map(([label, adler, opponent]) => this._renderCompareRow(label, adler, opponent)).join('')}
+        ${meta ? `<div class="cmp-meta">${escapeHtml(meta)}</div>` : ''}
       </div>`;
+  }
+
+  _renderCompareRow(label, adler, opponent) {
+    const adlerNumber = Number(String(adler).split('/')[0]) || 0;
+    const opponentNumber = Number(String(opponent).split('/')[0]) || 0;
+    const total = adlerNumber + opponentNumber;
+    const share = total ? Math.round((adlerNumber / total) * 100) : 50;
+    return `
+      <div class="cmp-row">
+        <span class="cmp-val">${escapeHtml(adler ?? '0')}</span>
+        <span class="cmp-bar-wrap">
+          <span class="cmp-label">${escapeHtml(label)}</span>
+          <span class="cmp-bar"><span class="cmp-fill" style="width:${share}%"></span></span>
+        </span>
+        <span class="cmp-val">${escapeHtml(opponent ?? '0')}</span>
+      </div>`;
+  }
+
+  _renderTimeline(attrs) {
+    const events = [];
+    (attrs.goals || []).forEach((goal) => {
+      events.push({
+        kind: 'goal',
+        period: goal.period || 0,
+        seconds: parseClockToSeconds(goal.time) || 0,
+        time: goal.time,
+        isAdler: goal.is_adler_goal,
+        title: goal.scorer,
+        subtitle: [goal.assist1, goal.assist2].filter(Boolean).join(', '),
+        badge: GOAL_TYPE_LABELS[goal.type] || goal.type,
+        score: `${goal.score_home ?? ''}:${goal.score_away ?? ''}`,
+      });
+    });
+    (attrs.penalties || []).forEach((penalty) => {
+      events.push({
+        kind: 'penalty',
+        period: penalty.period || 0,
+        seconds: parseClockToSeconds(penalty.time) || 0,
+        time: penalty.time,
+        isAdler: penalty.is_adler,
+        title: penalty.player,
+        subtitle: penalty.infraction,
+        badge: penalty.minutes,
+      });
+    });
+
+    if (!events.length) {
+      return '<div class="expanded-panel"><div class="cmp-meta">Keine Ereignisse</div></div>';
+    }
+
+    events.sort((a, b) => (a.period - b.period) || (a.seconds - b.seconds));
+
+    const periods = new Map();
+    events.forEach((event) => {
+      if (!periods.has(event.period)) {
+        periods.set(event.period, []);
+      }
+      periods.get(event.period).push(event);
+    });
+
+    const blocks = [...periods.entries()].map(([period, entries]) => `
+      <div class="tl-period">
+        <div class="tl-period-head">${period ? `${period}. Drittel` : 'Sonstige'}</div>
+        ${entries.map((event) => `
+          <div class="tl-event ${event.kind} ${event.isAdler ? 'adler' : 'opponent'}">
+            <span class="tl-time">${escapeHtml(event.time || '')}</span>
+            <span class="tl-icon">${event.kind === 'goal' ? '●' : '▮'}</span>
+            <span class="tl-body">
+              <span class="tl-title">${escapeHtml(event.title || '')}${event.score ? ` <em>${escapeHtml(event.score)}</em>` : ''}</span>
+              ${event.subtitle ? `<span class="tl-sub">${escapeHtml(event.subtitle)}</span>` : ''}
+            </span>
+            ${event.badge ? `<span class="tl-badge">${escapeHtml(event.badge)}</span>` : ''}
+          </div>`).join('')}
+      </div>`).join('');
+
+    return `<div class="expanded-panel timeline">${blocks}</div>`;
+  }
+
+  /* ── Styles ──────────────────────────────────────── */
+
+  _styles() {
+    return `
+      :host { display: block; }
+      ha-card {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(160deg, #0a1628 0%, #06101d 100%);
+        color: #e8eef7;
+        border: none;
+        padding: 0;
+      }
+      .screen { padding: 12px; }
+      .board-header {
+        text-align: center;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #7f93ad;
+        margin-bottom: 8px;
+      }
+      .panel {
+        background: #04080f;
+        border: 2px solid #16283f;
+        border-radius: 10px;
+        padding: 12px 10px;
+      }
+      .row-top {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 8px;
+        align-items: start;
+      }
+      .straf-col { text-align: center; min-width: 64px; }
+      .straf-title {
+        font-size: 8px;
+        letter-spacing: 0.1em;
+        color: #5f7794;
+        margin-bottom: 4px;
+      }
+      .straf-box {
+        min-height: 34px;
+        background: #0b1626;
+        border: 1px solid #1d3350;
+        border-radius: 6px;
+        padding: 3px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        justify-content: center;
+      }
+      .straf-empty { font-family: monospace; font-size: 12px; color: #2f4663; }
+      .straf-entry {
+        display: flex;
+        justify-content: space-between;
+        gap: 4px;
+        font-family: monospace;
+        font-size: 11px;
+      }
+      .straf-jersey { color: #8aa3c0; }
+      .straf-clock { color: #ffd34d; font-weight: 700; }
+      .clock-col { text-align: center; }
+      .team-row {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        justify-content: center;
+      }
+      .team-name {
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        color: #cfe0f3;
+        white-space: nowrap;
+      }
+      .rank-badge {
+        font-size: 9px;
+        font-weight: 600;
+        color: #6f87a5;
+        margin-left: 3px;
+        vertical-align: super;
+      }
+      .clock {
+        font-family: 'DSEG7', monospace;
+        font-size: 26px;
+        font-weight: 700;
+        color: #ff4d4d;
+        text-shadow: 0 0 12px rgba(255, 77, 77, 0.55);
+        min-width: 94px;
+        display: inline-block;
+      }
+      .clock-source {
+        font-size: 8px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #4e687f;
+        margin-top: 2px;
+      }
+      .row-score {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+      }
+      .pblocks-col { display: flex; gap: 4px; justify-content: center; }
+      .led-block {
+        width: 22px;
+        height: 30px;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #1d3350;
+      }
+      .led-block.on { background: #10243c; }
+      .led-block.off { background: #070e18; }
+      .led-val { font-family: monospace; font-size: 14px; color: #ffcf3d; }
+      .score-display { display: flex; align-items: center; gap: 10px; }
+      .score-digit {
+        font-family: monospace;
+        font-size: 46px;
+        font-weight: 700;
+        line-height: 1;
+        color: #ffffff;
+        text-shadow: 0 0 16px rgba(120, 180, 255, 0.35);
+      }
+      .period-circle {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 2px solid #2b4466;
+        display: grid;
+        place-items: center;
+        font-size: 13px;
+        font-weight: 700;
+        color: #9fb8d4;
+      }
+      .period-circle.active {
+        border-color: #ff4d4d;
+        color: #ff8080;
+        animation: pulse 2s ease-in-out infinite;
+      }
+      @keyframes pulse { 50% { opacity: 0.45; } }
+      .future-vs {
+        font-size: 24px;
+        font-weight: 800;
+        color: #4a6885;
+        letter-spacing: 0.1em;
+      }
+      .shot-row {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid #16283f;
+      }
+      .shot-val { font-family: monospace; font-size: 15px; color: #8fd0ff; text-align: center; }
+      .shot-label { font-size: 9px; letter-spacing: 0.1em; color: #5f7794; }
+      .ticker {
+        margin-top: 8px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        background: #0d1d31;
+        border-left: 3px solid #2b4466;
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .ticker.adler { border-left-color: #ff4d4d; }
+      .ticker-time { font-family: monospace; color: #7f93ad; white-space: nowrap; }
+      .led-ring {
+        margin-top: 8px;
+        text-align: center;
+        padding: 4px;
+        border-radius: 6px;
+        background: #04080f;
+        border: 1px solid #16283f;
+      }
+      .led-ring.glow { border-color: #ff4d4d; box-shadow: 0 0 14px rgba(255, 77, 77, 0.25); }
+      .led-text {
+        font-size: 9px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #6f87a5;
+      }
+      .standby { text-align: center; }
+      .standby-text {
+        padding: 28px 0;
+        font-size: 13px;
+        letter-spacing: 0.18em;
+        color: #3d5570;
+      }
+      .details { padding: 0 12px 12px; }
+      .info-row { display: flex; gap: 8px; flex-wrap: wrap; }
+      .info-card {
+        flex: 1 1 140px;
+        background: #0b1626;
+        border: 1px solid #16283f;
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .info-card.clickable { cursor: pointer; }
+      .info-card.expanded { border-color: #2b4466; }
+      .info-label {
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        color: #5f7794;
+        display: flex;
+        justify-content: space-between;
+      }
+      .info-opponent { font-size: 13px; font-weight: 700; margin-top: 3px; }
+      .info-meta { font-size: 10px; color: #7f93ad; margin-top: 2px; }
+      .last-score { font-family: monospace; font-size: 18px; color: #ffcf3d; margin-top: 2px; }
+      .cd-time { font-family: monospace; font-size: 12px; color: #8fd0ff; margin-top: 3px; }
+      .expanded-panel {
+        margin-top: 8px;
+        background: #0b1626;
+        border: 1px solid #16283f;
+        border-radius: 8px;
+        padding: 10px;
+      }
+      .exp-matchup {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 8px;
+      }
+      .exp-team { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .exp-logo { width: 40px; height: 40px; object-fit: contain; }
+      .exp-tname { font-size: 11px; text-align: center; color: #cfe0f3; }
+      .exp-vs { font-size: 12px; color: #4a6885; letter-spacing: 0.1em; }
+      .exp-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 6px;
+      }
+      .exp-item { display: flex; flex-direction: column; }
+      .exp-key { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: #5f7794; }
+      .exp-val { font-size: 12px; color: #e8eef7; }
+      .exp-link {
+        display: inline-block;
+        margin-top: 8px;
+        font-size: 11px;
+        color: #8fd0ff;
+        text-decoration: none;
+      }
+      .cmp-head {
+        display: grid;
+        grid-template-columns: 38px 1fr 38px;
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        color: #5f7794;
+        margin-bottom: 6px;
+      }
+      .cmp-head span:last-child { text-align: right; }
+      .cmp-row {
+        display: grid;
+        grid-template-columns: 38px 1fr 38px;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .cmp-val { font-family: monospace; font-size: 12px; color: #e8eef7; }
+      .cmp-row .cmp-val:last-child { text-align: right; }
+      .cmp-bar-wrap { display: flex; flex-direction: column; gap: 3px; }
+      .cmp-label { font-size: 9px; color: #7f93ad; text-align: center; }
+      .cmp-bar { height: 5px; background: #16283f; border-radius: 3px; overflow: hidden; }
+      .cmp-fill { display: block; height: 100%; background: linear-gradient(90deg, #ff4d4d, #ff8a3d); }
+      .cmp-meta { font-size: 9px; color: #5f7794; margin-top: 6px; text-align: center; }
+      .timeline { max-height: 340px; overflow-y: auto; }
+      .tl-period { margin-bottom: 10px; }
+      .tl-period-head {
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #5f7794;
+        border-bottom: 1px solid #16283f;
+        padding-bottom: 3px;
+        margin-bottom: 5px;
+      }
+      .tl-event {
+        display: grid;
+        grid-template-columns: 38px 12px 1fr auto;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 0;
+      }
+      .tl-time { font-family: monospace; font-size: 10px; color: #7f93ad; }
+      .tl-icon { font-size: 9px; color: #3d5570; }
+      .tl-event.adler .tl-icon { color: #ff4d4d; }
+      .tl-body { display: flex; flex-direction: column; }
+      .tl-title { font-size: 11px; color: #e8eef7; }
+      .tl-title em { font-family: monospace; color: #ffcf3d; font-style: normal; }
+      .tl-sub { font-size: 9px; color: #7f93ad; }
+      .tl-badge {
+        font-size: 8px;
+        padding: 1px 5px;
+        border-radius: 8px;
+        background: #16283f;
+        color: #9fb8d4;
+        white-space: nowrap;
+      }
+      .goal-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        background: rgba(4, 8, 15, 0.94);
+        animation: fadein 0.25s ease-out;
+      }
+      @keyframes fadein { from { opacity: 0; } }
+      .goal-shout {
+        font-size: 42px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        color: #ff4d4d;
+        text-shadow: 0 0 26px rgba(255, 77, 77, 0.7);
+        animation: shout 0.7s ease-in-out infinite alternate;
+      }
+      @keyframes shout { to { transform: scale(1.08); } }
+      .goal-photo { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; }
+      .goal-scorer { font-size: 20px; font-weight: 800; margin-top: 8px; }
+      .goal-assists { font-size: 12px; color: #9fb8d4; margin-top: 3px; }
+      .goal-meta { font-size: 10px; color: #7f93ad; margin-top: 5px; }
+      @media (max-width: 420px) {
+        .score-digit { font-size: 34px; }
+        .clock { font-size: 20px; min-width: 74px; }
+        .led-block { width: 18px; height: 26px; }
+        .straf-col { min-width: 52px; }
+      }`;
   }
 }
 
-/* ═══════════════════════════════════════════════
-   CSS
-   ═══════════════════════════════════════════════ */
-const STYLES = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  :host {
-    --home: #0066CC; --home-dim: #002244;
-    --away: #CC0000; --away-dim: #330000;
-    --bg: #000; --txt: #fff; --txt-dim: rgba(255,255,255,0.28); --txt-mid: rgba(255,255,255,0.55);
-    --ring-red: #BB0000; --ring-dark: #660000;
-    --detail-bg: #0e0e12; --card-bg: #141418;
-  }
-  ha-card { background: transparent !important; border: none !important; box-shadow: none !important; overflow: hidden; }
-  .cube { font-family: 'Segoe UI','Arial Black',system-ui,sans-serif; -webkit-font-smoothing: antialiased; position: relative; width: 100%; overflow: hidden; }
-
-  /* ─── SCOREBOARD ─── */
-  .screen { background: #111; border-radius: 8px 8px 0 0; overflow: hidden; border: 3px solid #1a1a1a; border-bottom: none;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.9), inset 0 0 40px rgba(0,0,0,0.8); }
-  .screen:only-child { border-radius: 8px; border-bottom: 3px solid #1a1a1a; }
-  .panel { background: var(--bg); padding: 10px 6px 6px; min-height: 140px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
-
-  .row-top { display: flex; align-items: flex-start; }
-  .straf-col { flex: 0 0 48px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-  .straf-title { font-size: 6px; font-weight: 800; letter-spacing: 1px; color: var(--txt-dim); }
-  .straf-box { width: 36px; height: 14px; border-radius: 2px; background: #0a0a0a; border: 1px solid #1a1a1a; }
-  .clock-col { flex: 1; display: flex; flex-direction: column; align-items: center; min-width: 0; }
-  .team-row { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
-  .team-name { font-size: 12px; font-weight: 900; letter-spacing: 2px; }
-  .home-c { color: var(--home); text-align: right; }
-  .away-c { color: var(--away); text-align: left; }
-  .clock { font-size: 20px; font-weight: 900; color: var(--txt); letter-spacing: 1px; text-shadow: 0 0 14px rgba(255,255,255,0.3); font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
-  .live .clock { text-shadow: 0 0 18px rgba(255,255,255,0.45); }
-
-  .row-score { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
-  .pblocks-col { flex: 0 0 32px; display: flex; flex-direction: column; gap: 3px; align-items: center; }
-  .led-block { width: 30px; height: 22px; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
-  .led-block.home.on { background: var(--home); box-shadow: 0 0 6px rgba(0,102,204,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
-  .led-block.home.off { background: var(--home-dim); border: 1px solid rgba(0,102,204,0.2); }
-  .led-block.away.on { background: var(--away); box-shadow: 0 0 6px rgba(204,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.15); }
-  .led-block.away.off { background: var(--away-dim); border: 1px solid rgba(204,0,0,0.2); }
-  .led-val { font-size: 13px; font-weight: 900; color: var(--txt); text-shadow: 0 0 4px rgba(255,255,255,0.3); }
-  .led-block.off .led-val { color: rgba(255,255,255,0.1); }
-
-  .score-col { flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0; }
-  .score-display { display: flex; align-items: center; justify-content: center; gap: 4px; }
-  .score-digit { font-size: 52px; font-weight: 900; color: var(--txt); line-height: 1; min-width: 36px; text-align: center;
-    text-shadow: 0 0 18px rgba(255,255,255,0.25), 0 0 40px rgba(255,255,255,0.08); }
-  .live .score-digit { text-shadow: 0 0 22px rgba(255,255,255,0.35), 0 0 50px rgba(255,255,255,0.12); }
-  .period-circle { width: 24px; height: 24px; border-radius: 50%; background: #333; border: 2px solid #555;
-    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: var(--txt); flex-shrink: 0; }
-  .period-circle.active { background: var(--away); border-color: #ff4444; box-shadow: 0 0 10px rgba(204,0,0,0.6); }
-  .future-vs { font-size: 32px; font-weight: 900; color: var(--txt-dim); letter-spacing: 4px; text-align: center; }
-
-  .ticker { text-align: center; padding: 4px 6px; font-size: 10px; font-weight: 600; color: var(--txt);
-    background: linear-gradient(90deg,transparent,rgba(0,102,204,0.12),transparent); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ticker strong { font-weight: 800; }
-  .ticker-time { color: rgba(255,255,255,0.4); margin-left: 4px; }
-
-  .led-ring { display: flex; align-items: center; justify-content: center; padding: 7px 10px;
-    background: linear-gradient(180deg, var(--ring-dark) 0%, var(--ring-red) 30%, var(--ring-red) 70%, var(--ring-dark) 100%); border-top: 1px solid #ee2222; }
-  .led-ring.glow { animation: ring-pulse 2.5s ease-in-out infinite; }
-  @keyframes ring-pulse { 0%,100%{filter:brightness(0.85)} 50%{filter:brightness(1.1)} }
-  .led-text { font-size: 11px; font-weight: 900; letter-spacing: 3px; color: var(--txt); text-shadow: 0 0 10px rgba(255,255,255,0.5); }
-
-  .standby .panel { min-height: 120px; justify-content: center; }
-  .standby-text { text-align: center; font-size: 11px; font-weight: 800; letter-spacing: 3px; color: var(--txt-dim); }
-
-  /* ═══ GOAL ALERT OVERLAY ═══ */
-  .goal-overlay {
-    position: absolute; inset: 0; z-index: 100; border-radius: 8px; overflow: hidden;
-    background: rgba(0,0,0,0.92); animation: overlay-in 0.3s ease-out;
-  }
-  @keyframes overlay-in { from { opacity: 0; transform: scale(1.05); } to { opacity: 1; transform: scale(1); } }
-
-  .alert-phase1 {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; gap: 6px; animation: phase1-pulse 0.6s ease-in-out infinite alternate;
-  }
-  .goal-overlay.phase2 .alert-phase1 { display: none; }
-  @keyframes phase1-pulse {
-    from { background: radial-gradient(circle, rgba(0,102,204,0.3) 0%, rgba(0,0,0,0) 70%); }
-    to   { background: radial-gradient(circle, rgba(204,0,0,0.3) 0%, rgba(0,0,0,0) 70%); }
-  }
-
-  .alert-siren { font-size: 36px; animation: siren-spin 0.5s ease-in-out infinite alternate; }
-  @keyframes siren-spin { from { transform: rotate(-10deg) scale(1); } to { transform: rotate(10deg) scale(1.1); } }
-
-  .alert-tor {
-    font-size: 40px; font-weight: 900; color: var(--txt); letter-spacing: 6px;
-    text-shadow: 0 0 30px var(--home), 0 0 60px rgba(0,102,204,0.5), 0 4px 8px rgba(0,0,0,0.8);
-    animation: tor-glow 0.8s ease-in-out infinite alternate;
-  }
-  @keyframes tor-glow {
-    from { text-shadow: 0 0 30px var(--home), 0 0 60px rgba(0,102,204,0.5); }
-    to   { text-shadow: 0 0 40px var(--away), 0 0 80px rgba(204,0,0,0.5); }
-  }
-
-  .alert-score { font-size: 20px; font-weight: 800; color: var(--txt-mid); letter-spacing: 3px; }
-
-  .alert-phase2 {
-    display: none; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; gap: 8px; padding: 12px; text-align: center;
-  }
-  .goal-overlay.phase2 .alert-phase2 { display: flex; animation: phase2-in 0.5s ease-out; }
-  @keyframes phase2-in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-
-  .alert-photo {
-    width: 90px; height: 90px; object-fit: contain; border-radius: 8px;
-    background: radial-gradient(circle, rgba(0,102,204,0.15) 0%, transparent 70%);
-    filter: drop-shadow(0 0 12px rgba(0,102,204,0.4));
-  }
-
-  .alert-info { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-  .alert-label { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--home); text-transform: uppercase; }
-  .alert-name { font-size: 20px; font-weight: 900; color: var(--txt); line-height: 1.1;
-    text-shadow: 0 0 12px rgba(0,102,204,0.3); }
-  .alert-jersey { font-size: 15px; font-weight: 800; color: var(--txt-mid); }
-  .alert-assists { font-size: 11px; color: var(--txt-mid); font-style: italic; }
-  .alert-time { font-size: 10px; color: var(--txt-dim); }
-  .alert-score2 { font-size: 18px; font-weight: 900; color: var(--txt); letter-spacing: 2px; margin-top: 2px; }
-
-  /* ─── DETAILS PANEL ─── */
-  .details { background: var(--detail-bg); border: 3px solid #1a1a1a; border-top: 1px solid #222;
-    border-radius: 0 0 8px 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
-  .detail-title { font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt-dim);
-    margin-bottom: 4px; padding-bottom: 3px; border-bottom: 1px solid #1a1a1a; }
-
-  .goal-list { display: flex; flex-direction: column; gap: 2px; }
-  .goal-row { display: flex; align-items: center; gap: 5px; padding: 3px 4px; border-radius: 4px;
-    font-size: 10px; color: var(--txt-mid); background: rgba(255,255,255,0.02); overflow: hidden; }
-
-  .goal-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: #1a1a1a; flex-shrink: 0; }
-  .goal-photo-empty { width: 24px; height: 24px; border-radius: 50%; background: #1a1a1a; flex-shrink: 0; }
-  .goal-time { font-weight: 700; color: var(--txt); min-width: 32px; font-variant-numeric: tabular-nums; font-size: 10px; }
-  .goal-period { font-weight: 600; color: var(--txt-dim); min-width: 14px; font-size: 9px; }
-  .goal-scorer { font-weight: 700; color: var(--txt); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .goal-jersey { font-size: 8px; font-weight: 700; color: var(--txt-dim); }
-  .goal-type { font-size: 8px; font-weight: 800; color: var(--home); background: rgba(0,102,204,0.15); padding: 1px 3px; border-radius: 3px; margin-left: 2px; }
-  .goal-assists { font-size: 9px; color: var(--txt-dim); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; min-width: 0; }
-
-  .info-row { display: flex; gap: 6px; }
-  .info-card { flex: 1; background: var(--card-bg); border-radius: 6px; padding: 8px; border: 1px solid #1e1e24; min-width: 0; overflow: hidden; }
-  .info-label { font-size: 7px; font-weight: 800; letter-spacing: 1.5px; color: var(--txt-dim); margin-bottom: 3px; }
-  .info-opponent { font-size: 12px; font-weight: 800; color: var(--txt); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .info-meta { font-size: 9px; color: var(--txt-dim); }
-  .cd-time { font-size: 16px; font-weight: 900; color: var(--home); margin-top: 3px; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
-  .last-score { font-size: 18px; font-weight: 900; color: var(--txt); margin: 2px 0; letter-spacing: 2px; }
-
-  /* ─── Clickable cards ─── */
-  .clickable { cursor: pointer; transition: border-color 0.2s, background 0.2s; }
-  .clickable:hover { border-color: #333; background: #1a1a20; }
-  .clickable.expanded { border-color: var(--home); background: #12121a; }
-  .expand-icon { float: right; font-size: 8px; color: var(--txt-dim); }
-
-  /* ─── Expanded panel ─── */
-  .expanded-panel { background: var(--card-bg); border: 1px solid #1e1e24; border-radius: 6px; padding: 10px; animation: expand-in 0.25s ease-out; }
-  @keyframes expand-in { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 800px; } }
-
-  /* Next game expanded */
-  .exp-matchup { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 10px; }
-  .exp-team { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
-  .exp-logo { width: 48px; height: 48px; object-fit: contain; filter: drop-shadow(0 0 6px rgba(255,255,255,0.1)); }
-  .exp-tname { font-size: 11px; font-weight: 700; color: var(--txt); text-align: center; }
-  .exp-vs { font-size: 18px; font-weight: 900; color: var(--txt-dim); letter-spacing: 2px; }
-  .exp-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .exp-info-item { background: rgba(255,255,255,0.02); border-radius: 4px; padding: 6px 8px; }
-  .exp-key { display: block; font-size: 8px; font-weight: 700; color: var(--txt-dim); letter-spacing: 1px; text-transform: uppercase; }
-  .exp-val { display: block; font-size: 13px; font-weight: 800; color: var(--txt); margin-top: 2px; }
-  .exp-cd { color: var(--home); }
-
-  /* ─── Timeline ─── */
-  .tl-summary { display: flex; gap: 10px; justify-content: center; margin-bottom: 8px; flex-wrap: wrap; }
-  .tl-sum-item { font-size: 9px; font-weight: 700; color: var(--txt-mid); display: flex; align-items: center; gap: 4px; }
-  .dot-adler-sm, .dot-opp-sm, .dot-pen-sm { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .dot-adler-sm { background: var(--home); }
-  .dot-opp-sm { background: var(--away); }
-  .dot-pen-sm { background: #cc9900; }
-
-  .tl-period-header {
-    font-size: 8px; font-weight: 800; letter-spacing: 2px; color: var(--txt-dim);
-    text-transform: uppercase; padding: 6px 0 3px 42px; border-top: 1px solid #1a1a1a;
-  }
-  .tl-period-header:first-child { border-top: none; }
-
-  .timeline { display: flex; flex-direction: column; }
-
-  .tl-event { display: flex; align-items: flex-start; gap: 0; min-height: 32px; }
-
-  .tl-time {
-    flex: 0 0 36px; font-size: 10px; font-weight: 700; color: var(--txt-mid);
-    text-align: right; padding-top: 4px; font-variant-numeric: tabular-nums;
-  }
-
-  .tl-line {
-    flex: 0 0 20px; display: flex; flex-direction: column; align-items: center; position: relative;
-    padding-top: 5px;
-  }
-  .tl-line::before {
-    content: ''; position: absolute; top: 0; bottom: 0; width: 1px; background: #222; left: 50%;
-  }
-  .tl-dot {
-    width: 10px; height: 10px; border-radius: 50%; position: relative; z-index: 1; flex-shrink: 0;
-  }
-  .dot-adler { background: var(--home); box-shadow: 0 0 6px rgba(0,102,204,0.6); }
-  .dot-opp { background: var(--away); box-shadow: 0 0 6px rgba(204,0,0,0.6); }
-  .dot-penalty { background: #cc9900; box-shadow: 0 0 6px rgba(204,153,0,0.5); }
-
-  .tl-content { flex: 1; padding: 2px 0 8px 6px; min-width: 0; }
-  .tl-primary { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-  .tl-primary span { font-size: 11px; font-weight: 700; color: var(--txt); }
-  .tl-photo { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
-  .tl-jersey { font-size: 9px; font-weight: 600; color: var(--txt-dim); }
-  .tl-badge {
-    font-size: 8px; font-weight: 800; padding: 1px 4px; border-radius: 3px; flex-shrink: 0;
-  }
-  .tl-badge.adler-goal { color: var(--home); background: rgba(0,102,204,0.15); }
-  .tl-badge.opp-goal { color: var(--away); background: rgba(204,0,0,0.15); }
-  .tl-badge.penalty { color: #cc9900; background: rgba(204,153,0,0.12); }
-  .tl-secondary { font-size: 9px; color: var(--txt-dim); font-style: italic; margin-top: 1px; }
-  .tl-empty { text-align: center; padding: 16px; color: var(--txt-dim); font-size: 11px; }
-`;
-
 customElements.define('adler-mannheim-scoreboard', AdlerMannheimScoreboard);
+
 window.customCards = window.customCards || [];
-window.customCards.push({ type: 'adler-mannheim-scoreboard', name: 'Adler Mannheim Scoreboard', description: 'SAP Arena Videowürfel + Goal Alerts', preview: true });
-console.info(`%c ADLER-SCOREBOARD %c v${CARD_VERSION} `, 'background:#CC0000;color:#fff;font-weight:bold;padding:2px 8px;border-radius:4px 0 0 4px', 'background:#222;color:#fff;padding:2px 8px;border-radius:0 4px 4px 0');
+window.customCards.push({
+  type: 'adler-mannheim-scoreboard',
+  name: 'Adler Mannheim Scoreboard',
+  description: `Anzeigetafel mit Live-Spieluhr, Strafzeiten und Statistik (v${CARD_VERSION})`,
+  preview: false,
+});

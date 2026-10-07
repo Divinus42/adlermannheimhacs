@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .const import ADLER_CLUB_ID, BASE_URL, DOMAIN
-from .coordinator import AdlerMannheimCoordinator, format_scorer
+from .coordinator import AdlerMannheimCoordinator, format_scorer, photo_url
 
 _LOGO_BASE = BASE_URL.rsplit("/jsonapi", 1)[0]  # https://www.adler-mannheim.de
 
@@ -39,6 +39,13 @@ async def async_setup_entry(
         AdlerMannheimSeasonSensor(coordinator),
         AdlerMannheimPlayoffSensor(coordinator),
         AdlerMannheimGameStatsSensor(coordinator),
+        AdlerMannheimClockSensor(coordinator),
+        AdlerMannheimStandingsSensor(coordinator),
+        AdlerMannheimTopScorerSensor(coordinator),
+        AdlerMannheimGoalieSensor(coordinator),
+        AdlerMannheimRosterSensor(coordinator),
+        AdlerMannheimLineupSensor(coordinator),
+        AdlerMannheimCompetitionsSensor(coordinator),
     ])
 
 
@@ -48,6 +55,19 @@ def _is_adler_home(game: dict) -> bool:
         return True
     # Fallback to team name
     return "Adler" in (game.get("hometeam") or "")
+
+
+def _asset_url(path: str | None) -> str | None:
+    """Return a usable logo URL.
+
+    The detail endpoint hands out absolute S3 URLs while older payload shapes
+    carry a site-relative path, so only a relative path gets the host prefix.
+    """
+    if not path:
+        return None
+    if path.startswith(("http://", "https://", "//")):
+        return path
+    return f"{_LOGO_BASE}{path}"
 
 
 def _get_device_info() -> DeviceInfo:
@@ -139,13 +159,9 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
         opponent = game.get("awayteam") if adler_is_home else game.get("hometeam")
         status = game.get("status", "")
 
-        # Build full logo URLs
-        home_logo_path = game.get("homelogourl")
-        away_logo_path = game.get("awaylogourl")
-
         attrs = {
             "game_id": game.get("id"),
-            "status": game.get("status"),
+            "status": status,
             "home_team": game.get("hometeam"),
             "away_team": game.get("awayteam"),
             "home_team_short": game.get("hometeam_short"),
@@ -157,8 +173,21 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
             "match_start": _format_matchstart_local(game.get("matchstart")),
             "match_start_iso": _matchstart_iso(game.get("matchstart")),
             "competition": game.get("competitiontype"),
-            "home_logo": f"{_LOGO_BASE}{home_logo_path}" if home_logo_path else None,
-            "away_logo": f"{_LOGO_BASE}{away_logo_path}" if away_logo_path else None,
+            "competition_title": game.get("competitionshorttitle"),
+            "matchday": game.get("matchday"),
+            "arena": game.get("arena"),
+            "attendance": game.get("attendance") or None,
+            "rank_home": game.get("homerank"),
+            "rank_away": game.get("awayrank"),
+            "rank_adler": game.get("homerank") if adler_is_home else game.get("awayrank"),
+            "rank_opponent": game.get("awayrank") if adler_is_home else game.get("homerank"),
+            "home_logo": _asset_url(game.get("homelogourl")) or photo_url(game.get("homelogoid"), 160),
+            "away_logo": _asset_url(game.get("awaylogourl")) or photo_url(game.get("awaylogoid"), 160),
+            "competition_logo": _asset_url(game.get("competitionlogourl")),
+            "league_color": game.get("leaguebackgroundcolor"),
+            "link_livestream": game.get("link_Livestream"),
+            "link_ticketing": game.get("link_Ticketing"),
+            "tickets_soldout": game.get("ticketsSoldout"),
         }
 
         # Period scores (from detail endpoint, skip for future games)
@@ -195,13 +224,11 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
                         if adler_logoid is not None
                         else False
                     ),
+                    "score_home": g.get("homescore"),
+                    "score_away": g.get("awayscore"),
                     "scorer": format_scorer(g.get("scorer", {})),
                     "scorer_jersey": g.get("scorer", {}).get("jersey"),
-                    "scorer_photo": (
-                        f"{_LOGO_BASE}{g['scorer']['photourl']}"
-                        if g.get("scorer", {}).get("photourl")
-                        else None
-                    ),
+                    "scorer_photo": photo_url(g.get("scorer", {}).get("photoid"), 120),
                     "assist1": format_scorer(g.get("assist1", {})),
                     "assist2": format_scorer(g.get("assist2", {})),
                 }
@@ -216,8 +243,10 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
                     "period": p.get("period"),
                     "time": p.get("time"),
                     "player": format_scorer(p.get("player", {})),
+                    "player_jersey": p.get("player", {}).get("jersey"),
                     "infraction": p.get("infraction"),
                     "minutes": p.get("penaltytime"),
+                    "is_adler": p.get("teamlogoid") == adler_logoid,
                 }
                 for p in penalties
             ]
@@ -388,6 +417,9 @@ class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
             attrs["last_scorer_jersey"] = (
                 g.get("scorer", {}).get("jersey") if g.get("scorer") else None
             )
+            attrs["last_scorer_photo"] = photo_url(
+                g.get("scorer", {}).get("photoid"), 160
+            )
             attrs["last_time"] = g.get("time")
             attrs["last_period"] = g.get("period")
             attrs["last_type"] = g.get("goaltype")
@@ -407,7 +439,7 @@ class AdlerMannheimGoalAlertSensor(CoordinatorEntity, SensorEntity):
 
 
 class AdlerMannheimSeasonSensor(CoordinatorEntity, SensorEntity):
-    """Sensor showing the season record (W-L-OTL)."""
+    """Sensor showing the league record (W-L-OTL)."""
 
     def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
         super().__init__(coordinator)
@@ -433,8 +465,11 @@ class AdlerMannheimSeasonSensor(CoordinatorEntity, SensorEntity):
         stats = self.coordinator.data.get("season_stats")
         if not stats:
             return None
-        return {
+
+        attrs = {
             "wins": stats["wins"],
+            "regulation_wins": stats["regulation_wins"],
+            "ot_wins": stats["ot_wins"],
             "losses": stats["losses"],
             "otl": stats["otl"],
             "points": stats["points"],
@@ -447,6 +482,82 @@ class AdlerMannheimSeasonSensor(CoordinatorEntity, SensorEntity):
             "streak": stats["streak"],
             "last_5": stats["last_5"],
             "win_pct": stats["win_pct"],
+        }
+
+        # The club publishes its own table row, which is the authoritative
+        # record and the only place a rank comes from.
+        standings = self.coordinator.data.get("standings") or {}
+        official = standings.get("adler")
+        if official:
+            attrs["official_rank"] = official.get("rank")
+            attrs["official_points"] = official.get("points")
+            attrs["official_games_played"] = official.get("games_played")
+            attrs["official_home_record"] = official.get("home_record")
+            attrs["official_road_record"] = official.get("road_record")
+
+        return attrs
+
+
+class AdlerMannheimCompetitionsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the record across every competition, CHL included."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Wettbewerbe"
+        self._attr_unique_id = "adler_mannheim_competitions"
+        self._attr_icon = "mdi:tournament"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_competitions"
+
+    def _total(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        competitions = self.coordinator.data.get("competitions") or {}
+        return competitions.get("total")
+
+    @property
+    def native_value(self) -> str | None:
+        total = self._total()
+        if not total:
+            return None
+        return f"{total['wins']}W-{total['losses']}L-{total['otl']}OTL"
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        competitions = self.coordinator.data.get("competitions") or {}
+        total = competitions.get("total")
+        if not total:
+            return None
+
+        by_competition = competitions.get("by_competition") or {}
+        summary = {}
+        for key, record in by_competition.items():
+            summary[key] = {
+                "title": record.get("title"),
+                "record": f"{record['wins']}-{record['losses']}-{record['otl']}",
+                "games_played": record["games_played"],
+                "points": record["points"],
+                "goals_for": record["goals_for"],
+                "goals_against": record["goals_against"],
+                "goal_diff": record["goal_diff"],
+                "streak": record["streak"],
+                "last_5": record["last_5"],
+            }
+
+        return {
+            "games_played": total["games_played"],
+            "wins": total["wins"],
+            "losses": total["losses"],
+            "otl": total["otl"],
+            "goals_for": total["goals_for"],
+            "goals_against": total["goals_against"],
+            "goal_diff": total["goal_diff"],
+            "streak": total["streak"],
+            "last_5": total["last_5"],
+            "competitions": summary,
+            "results": total["results"][-20:],
         }
 
 
@@ -488,7 +599,7 @@ class AdlerMannheimPlayoffSensor(CoordinatorEntity, SensorEntity):
 
 
 class AdlerMannheimGameStatsSensor(CoordinatorEntity, SensorEntity):
-    """Sensor showing detailed game statistics (shots, faceoffs, etc.)."""
+    """Sensor showing the team comparison of the running or last game."""
 
     def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
         super().__init__(coordinator)
@@ -512,3 +623,267 @@ class AdlerMannheimGameStatsSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.data:
             return None
         return self.coordinator.data.get("game_stats")
+
+
+class AdlerMannheimClockSensor(CoordinatorEntity, SensorEntity):
+    """Sensor carrying the game clock from the club ticker.
+
+    The scoreboard card reads `elapsed_seconds` plus the local timestamp of
+    the last update to keep counting between two polls, so the displayed time
+    moves even though the API is only read every few seconds.
+    """
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Spieluhr"
+        self._attr_unique_id = "adler_mannheim_clock"
+        self._attr_icon = "mdi:timer-outline"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_clock"
+
+    def _clock(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("clock")
+
+    @property
+    def native_value(self) -> str | None:
+        clock = self._clock()
+        if not clock:
+            return "idle"
+        if clock.get("clock"):
+            return clock["clock"]
+        period = clock.get("period")
+        return f"P{period}" if period else "idle"
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        clock = self._clock()
+        if not clock:
+            return {"source": None, "running": False}
+
+        # No timestamp of our own here: the card measures how long ago the
+        # clock arrived from the state's own last_updated, and an attribute
+        # that changed on every poll would both reset that measurement and
+        # force a state write on every tick even when nothing moved.
+        attrs = dict(clock)
+
+        ticker = self.coordinator.data.get("ticker") or {}
+        attrs["ticker_events"] = ticker.get("events", [])[-10:]
+        attrs["ticker_types"] = ticker.get("types")
+        return attrs
+
+
+class AdlerMannheimStandingsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor carrying the league table the club publishes."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Tabelle"
+        self._attr_unique_id = "adler_mannheim_standings"
+        self._attr_icon = "mdi:format-list-numbered"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_standings"
+
+    def _standings(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("standings")
+
+    @property
+    def native_value(self) -> int | str | None:
+        standings = self._standings()
+        if not standings:
+            return None
+        return standings.get("adler_rank") or "unbekannt"
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        standings = self._standings()
+        if not standings:
+            return None
+
+        groups = standings.get("groups") or {}
+        primary_key = next(iter(groups), None)
+        primary = groups.get(primary_key) if primary_key else None
+
+        attrs = {
+            "adler_rank": standings.get("adler_rank"),
+            "adler": standings.get("adler"),
+            "groups": list(groups.keys()),
+        }
+
+        if primary:
+            attrs.update({
+                "title": primary.get("title"),
+                "updated": primary.get("updated"),
+                "playoff_cut": primary.get("playoff_cut"),
+                "playoff_cut_legend": primary.get("playoff_cut_legend"),
+                "qualification_cut": primary.get("qualification_cut"),
+                "qualification_cut_legend": primary.get("qualification_cut_legend"),
+                "teams": primary.get("teams"),
+            })
+
+        return attrs
+
+
+class AdlerMannheimTopScorerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the squad's leading scorer."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Topscorer"
+        self._attr_unique_id = "adler_mannheim_top_scorer"
+        self._attr_icon = "mdi:medal"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_top_scorer"
+
+    def _scorers(self) -> list[dict]:
+        if not self.coordinator.data:
+            return []
+        team = self.coordinator.data.get("team") or {}
+        return team.get("top_scorers") or []
+
+    @property
+    def native_value(self) -> str | None:
+        scorers = self._scorers()
+        if not scorers:
+            return None
+        return scorers[0].get("name")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        scorers = self._scorers()
+        if not scorers:
+            return None
+
+        leader = scorers[0]
+        team = self.coordinator.data.get("team") or {}
+        return {
+            "points": leader.get("points"),
+            "goals": leader.get("goals"),
+            "assists": leader.get("assists"),
+            "jersey": leader.get("jersey"),
+            "position": leader.get("position"),
+            "photo": leader.get("photo"),
+            "competition": leader.get("competition"),
+            "updated": team.get("updated"),
+            "top_scorers": scorers,
+        }
+
+
+class AdlerMannheimGoalieSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the goaltender with the most ice time."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Torhüter"
+        self._attr_unique_id = "adler_mannheim_goalie"
+        self._attr_icon = "mdi:hand-back-right"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_goalie"
+
+    def _goalies(self) -> list[dict]:
+        if not self.coordinator.data:
+            return []
+        team = self.coordinator.data.get("team") or {}
+        return team.get("goalies") or []
+
+    @property
+    def native_value(self) -> str | None:
+        goalies = self._goalies()
+        if not goalies:
+            return None
+        return goalies[0].get("name")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        goalies = self._goalies()
+        if not goalies:
+            return None
+
+        leader = goalies[0]
+        return {
+            "save_percentage": leader.get("savepercentage"),
+            "goals_against_average": leader.get("goalsagainstaverage"),
+            "games_played": leader.get("gamesplayed"),
+            "minutes": leader.get("minutes"),
+            "shutouts": leader.get("shutouts"),
+            "jersey": leader.get("jersey"),
+            "photo": leader.get("photo"),
+            "goalies": goalies,
+        }
+
+
+class AdlerMannheimRosterSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the squad and who is currently injured."""
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Kader"
+        self._attr_unique_id = "adler_mannheim_roster"
+        self._attr_icon = "mdi:account-group"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_roster"
+
+    def _roster(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("roster")
+
+    @property
+    def native_value(self) -> int | None:
+        roster = self._roster()
+        if not roster:
+            return None
+        return roster.get("count")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        roster = self._roster()
+        if not roster:
+            return None
+        return {
+            "injured_count": roster.get("injured_count"),
+            "injured": roster.get("injured"),
+            "by_position": roster.get("by_position"),
+            "team_photo": roster.get("team_photo"),
+        }
+
+
+class AdlerMannheimLineupSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing who was on the Adler game sheet.
+
+    The API delivers the Adler bench only and without per-player counters, so
+    this names who played rather than how they played.
+    """
+
+    def __init__(self, coordinator: AdlerMannheimCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Adler Mannheim Aufstellung"
+        self._attr_unique_id = "adler_mannheim_lineup"
+        self._attr_icon = "mdi:clipboard-list-outline"
+        self._attr_device_info = _get_device_info()
+        self.entity_id = "sensor.adler_mannheim_lineup"
+
+    def _lineup(self) -> dict | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("lineup")
+
+    @property
+    def native_value(self) -> int | None:
+        lineup = self._lineup()
+        if not lineup:
+            return None
+        return lineup.get("adler_count")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        lineup = self._lineup()
+        if not lineup:
+            return None
+        return {
+            "adler": lineup.get("adler"),
+            "by_position": lineup.get("by_position"),
+        }
