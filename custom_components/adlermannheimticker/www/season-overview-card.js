@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.0';
+const CARD_VERSION = '7.0.0';
 
 const DEFAULT_ENTITIES = {
   entity_season: 'sensor.adler_mannheim_season',

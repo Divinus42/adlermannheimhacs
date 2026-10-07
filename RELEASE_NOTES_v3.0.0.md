@@ -68,4 +68,4 @@ Fotos und Wappen kommen ueber `/jsonapi/image/{id}?width=200`. Ohne den Breitenp
 
 ## Umstieg
 
-Keine Handgriffe noetig, alle bisherigen Entities behalten ihre IDs und Attribute. Fuer die neuen Karten einmal den Browser-Cache umgehen, indem die Lovelace-Ressource einen neuen Versionsparameter bekommt (`/local/adler-mannheim-scoreboard.js?v=6`).
+Keine Handgriffe noetig, alle bisherigen Entities behalten ihre IDs und Attribute. Fuer die neuen Karten einmal den Browser-Cache umgehen, indem die Lovelace-Ressource einen neuen Versionsparameter bekommt (`/local/adler-mannheim-scoreboard.js?v=7`).

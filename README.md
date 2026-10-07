@@ -63,8 +63,8 @@ Die Dashboard-Cards werden **automatisch** nach `/config/www/` kopiert. Du musst
 
 | Ressource | URL | Typ |
 |-----------|-----|-----|
-| Scoreboard | `/local/adler-mannheim-scoreboard.js?v=6` | JavaScript-Modul |
-| Season Overview | `/local/adler-season-overview.js?v=6` | JavaScript-Modul |
+| Scoreboard | `/local/adler-mannheim-scoreboard.js?v=7` | JavaScript-Modul |
+| Season Overview | `/local/adler-season-overview.js?v=7` | JavaScript-Modul |
 
 ### Schritt 2: Cards hinzufuegen
 

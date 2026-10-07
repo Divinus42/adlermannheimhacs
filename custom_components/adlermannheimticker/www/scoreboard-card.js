@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.0';
+const CARD_VERSION = '7.0.0';
 
 /* Period length in seconds. The API reports goal, penalty and ticker times as
    time elapsed inside the period, counting up from 00:00, which the two
