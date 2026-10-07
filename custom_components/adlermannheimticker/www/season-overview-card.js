@@ -1,4 +1,4 @@
-const CARD_VERSION = '8.0.0';
+const CARD_VERSION = '9.0.0';
 
 /* The club's own typefaces and palette, taken from its website. The font
    files are served with Access-Control-Allow-Origin: *, so a card may load
@@ -6,6 +6,10 @@ const CARD_VERSION = '8.0.0';
 const FONT_BASE = 'https://www.adler-mannheim.de/_resources/themes/homepage/css/fonts';
 
 const BRAND = {
+  /* The cube keeps these apart: the surrounding faces glow navy, the display
+     surfaces themselves are near black. So the card body is the dark panel
+     and the navy key visual stays in the head band. */
+  panel: '#0d1013',
   navy: '#00264d',
   red: '#e50026',
   lightBlue: '#80a7cc',
@@ -341,7 +345,7 @@ class AdlerSeasonOverview extends HTMLElement {
 
       :host { display: block; }
       ha-card {
-        --am-base: ${BRAND.navy};
+        --am-base: ${BRAND.panel};
         --am-accent: ${BRAND.red};
         --am-ink: #ffffff;
         --am-muted: rgba(255, 255, 255, 0.6);
@@ -370,7 +374,7 @@ class AdlerSeasonOverview extends HTMLElement {
       .head-bg {
         position: absolute;
         inset: 0;
-        background-color: var(--am-base);
+        background-color: ${BRAND.navy};
         background-image: url('${BRAND.background}');
         background-size: cover;
         background-position: center;
