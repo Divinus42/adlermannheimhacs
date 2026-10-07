@@ -20,6 +20,9 @@ CARD_DIR = Path(__file__).parent / "www"
 CARDS = {
     "scoreboard-card.js": "adler-mannheim-scoreboard.js",
     "season-overview-card.js": "adler-season-overview.js",
+    # Registers the club typefaces for the whole document, so the theme can
+    # use them on markdown and tile cards too, not only on the two cards here.
+    "adler-fonts.js": "adler-fonts.js",
 }
 
 

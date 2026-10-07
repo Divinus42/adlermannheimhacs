@@ -70,6 +70,21 @@ def _asset_url(path: str | None) -> str | None:
     return f"{_LOGO_BASE}{path}"
 
 
+def _css_color(value: str | None) -> str | None:
+    """Return a hex colour a stylesheet can use.
+
+    The API is inconsistent about the leading hash: a league game carries
+    "#00264D" while a Champions League game carries "400045", and the bare
+    form is not a valid CSS colour.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text if text.startswith("#") else f"#{text}"
+
+
 def _get_device_info() -> DeviceInfo:
     """Return shared device info for all sensors."""
     return DeviceInfo(
@@ -184,7 +199,11 @@ class AdlerMannheimGameSensor(CoordinatorEntity, SensorEntity):
             "home_logo": _asset_url(game.get("homelogourl")) or photo_url(game.get("homelogoid"), 160),
             "away_logo": _asset_url(game.get("awaylogourl")) or photo_url(game.get("awaylogoid"), 160),
             "competition_logo": _asset_url(game.get("competitionlogourl")),
-            "league_color": game.get("leaguebackgroundcolor"),
+            # The club publishes one gameday key visual per competition and
+            # names it per game, so the card can dress itself in the right one
+            # instead of hardcoding a look.
+            "league_background": _asset_url(game.get("leaguebackgroundurl")),
+            "league_color": _css_color(game.get("leaguebackgroundcolor")),
             "link_livestream": game.get("link_Livestream"),
             "link_ticketing": game.get("link_Ticketing"),
             "tickets_soldout": game.get("ticketsSoldout"),

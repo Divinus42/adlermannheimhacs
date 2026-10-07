@@ -1,4 +1,16 @@
-const CARD_VERSION = '7.0.0';
+const CARD_VERSION = '8.0.0';
+
+/* The club's own typefaces and palette, taken from its website. The font
+   files are served with Access-Control-Allow-Origin: *, so a card may load
+   them directly. */
+const FONT_BASE = 'https://www.adler-mannheim.de/_resources/themes/homepage/css/fonts';
+
+const BRAND = {
+  navy: '#00264d',
+  red: '#e50026',
+  lightBlue: '#80a7cc',
+  background: 'https://s3.adler-mannheim.de/public/Backgrounds/adler-mannheim-del-2.svg',
+};
 
 const DEFAULT_ENTITIES = {
   entity_season: 'sensor.adler_mannheim_season',
@@ -116,6 +128,8 @@ class AdlerSeasonOverview extends HTMLElement {
 
     return `
       <div class="head">
+        <div class="head-bg"></div>
+        <div class="head-scrim"></div>
         <div class="head-rank">
           <span class="rank-value">${escapeHtml(rank || '?')}</span>
           <span class="rank-label">Platz</span>
@@ -299,73 +313,178 @@ class AdlerSeasonOverview extends HTMLElement {
 
   _styles() {
     return `
-      ha-card {
-        background: linear-gradient(160deg, #0a1628 0%, #06101d 100%);
-        color: #e8eef7;
-        padding: 12px;
-        overflow: hidden;
+      @font-face {
+        font-family: 'AM Industry';
+        src: url('${FONT_BASE}/Industry-BlackItalic.woff2') format('woff2');
+        font-weight: 900;
+        font-style: italic;
+        font-display: swap;
       }
-      .empty { padding: 24px; text-align: center; color: #5f7794; font-size: 12px; }
+      @font-face {
+        font-family: 'AM Industry Inc';
+        src: url('${FONT_BASE}/IndustryInc-Base.woff2') format('woff2');
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'AM 72';
+        src: url('${FONT_BASE}/72-Regular-full.woff2') format('woff2');
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'AM 72';
+        src: url('${FONT_BASE}/72-Bold-full.woff2') format('woff2');
+        font-weight: 700;
+        font-display: swap;
+      }
+
+      :host { display: block; }
+      ha-card {
+        --am-base: ${BRAND.navy};
+        --am-accent: ${BRAND.red};
+        --am-ink: #ffffff;
+        --am-muted: rgba(255, 255, 255, 0.6);
+        --am-line: rgba(255, 255, 255, 0.14);
+        --am-sunken: rgba(0, 0, 0, 0.34);
+        background: var(--am-base);
+        color: var(--am-ink);
+        padding: 0;
+        overflow: hidden;
+        border: none;
+        font-family: 'AM 72', system-ui, sans-serif;
+      }
+      .empty { padding: 26px; text-align: center; color: var(--am-muted); font-size: 12px; }
+
+      /* The head carries the club's gameday key visual, the same graphic the
+         scoreboard uses, so both cards read as one surface. */
       .head {
+        position: relative;
         display: grid;
         grid-template-columns: auto 1fr auto;
         gap: 12px;
         align-items: center;
-        padding-bottom: 10px;
-        border-bottom: 1px solid #16283f;
+        padding: 14px 14px 13px;
+        overflow: hidden;
       }
+      .head-bg {
+        position: absolute;
+        inset: 0;
+        background-color: var(--am-base);
+        background-image: url('${BRAND.background}');
+        background-size: cover;
+        background-position: center;
+      }
+      .head-scrim {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(100deg, rgba(0, 0, 0, 0.74) 0%, rgba(0, 0, 0, 0.3) 52%, rgba(0, 0, 0, 0.7) 100%);
+      }
+      .head > *:not(.head-bg):not(.head-scrim) { position: relative; }
       .head-rank { text-align: center; }
       .rank-value {
         display: block;
-        font-family: monospace;
-        font-size: 30px;
-        font-weight: 700;
-        color: #ff4d4d;
-        line-height: 1;
+        font-family: 'AM Industry', sans-serif;
+        font-style: italic;
+        font-weight: 900;
+        font-size: 44px;
+        line-height: 0.92;
+        color: var(--am-accent);
+        text-shadow: 0 0 22px rgba(0, 0, 0, 0.5);
       }
-      .rank-label { font-size: 8px; letter-spacing: 0.14em; color: #5f7794; text-transform: uppercase; }
-      .head-title { font-size: 14px; font-weight: 700; }
-      .head-sub { font-size: 11px; color: #9fb8d4; margin-top: 2px; }
-      .head-note { font-size: 9px; color: #5f7794; margin-top: 2px; }
+      .rank-label {
+        font-family: 'AM Industry Inc', sans-serif;
+        font-size: 8px;
+        letter-spacing: 0.2em;
+        color: var(--am-muted);
+        text-transform: uppercase;
+      }
+      .head-title {
+        font-family: 'AM Industry', sans-serif;
+        font-style: italic;
+        font-weight: 900;
+        font-size: 18px;
+        letter-spacing: 0.01em;
+      }
+      .head-sub { font-size: 11px; color: rgba(255, 255, 255, 0.78); margin-top: 2px; }
+      .head-note {
+        font-family: 'AM Industry Inc', sans-serif;
+        font-size: 8px;
+        letter-spacing: 0.14em;
+        color: var(--am-muted);
+        margin-top: 3px;
+        text-transform: uppercase;
+      }
       .head-diff { text-align: right; }
-      .diff-value { display: block; font-family: monospace; font-size: 17px; font-weight: 700; }
-      .diff-label { font-size: 10px; color: #7f93ad; }
-      .good { color: #4ade80; }
-      .bad { color: #f87171; }
+      .diff-value {
+        display: block;
+        font-family: 'AM Industry', sans-serif;
+        font-style: italic;
+        font-weight: 900;
+        font-size: 22px;
+      }
+      .diff-label {
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--am-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .good { color: #5ed267; }
+      .bad { color: #ff5f6d; }
+
       .tiles {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
         gap: 6px;
-        margin-top: 10px;
+        padding: 10px 14px 0;
       }
       .tile {
-        background: #0b1626;
-        border: 1px solid #16283f;
-        border-radius: 8px;
-        padding: 7px 8px;
+        background: var(--am-sunken);
+        border: 1px solid var(--am-line);
+        border-radius: 4px;
+        padding: 7px 9px;
       }
       .tile-title {
+        font-family: 'AM Industry Inc', sans-serif;
         font-size: 8px;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
-        color: #5f7794;
+        color: var(--am-muted);
       }
-      .tile-record { font-family: monospace; font-size: 15px; color: #ffcf3d; margin-top: 2px; }
-      .tile-meta { font-size: 9px; color: #7f93ad; margin-top: 1px; }
-      .tabs { display: flex; gap: 4px; margin-top: 12px; }
+      .tile-record {
+        font-family: 'AM Industry', sans-serif;
+        font-style: italic;
+        font-weight: 900;
+        font-size: 17px;
+        margin-top: 2px;
+      }
+      .tile-meta {
+        font-family: ui-monospace, monospace;
+        font-size: 9px;
+        color: var(--am-muted);
+        margin-top: 1px;
+        font-variant-numeric: tabular-nums;
+      }
+      .tabs { display: flex; gap: 5px; padding: 11px 14px 0; }
       .tab {
         flex: 1;
-        background: #0b1626;
-        border: 1px solid #16283f;
-        border-radius: 6px;
-        color: #7f93ad;
-        font-size: 11px;
-        padding: 6px 4px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--am-line);
+        border-radius: 3px;
+        color: var(--am-muted);
+        font-family: 'AM Industry Inc', sans-serif;
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 7px 4px;
         cursor: pointer;
-        font-family: inherit;
       }
-      .tab.active { background: #16283f; color: #e8eef7; border-color: #2b4466; }
-      .tab-body { margin-top: 10px; }
+      .tab.active {
+        background: var(--am-accent);
+        border-color: var(--am-accent);
+        color: #fff;
+      }
+      .tab-body { padding: 11px 14px 14px; }
       .form-head {
         display: flex;
         align-items: center;
@@ -373,7 +492,7 @@ class AdlerSeasonOverview extends HTMLElement {
         flex-wrap: wrap;
         margin-bottom: 8px;
       }
-      .form-label, .streak { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #5f7794; }
+      .form-label, .streak { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--am-muted); }
       .streak { margin-left: auto; }
       .chips { display: flex; gap: 3px; }
       .chip {
@@ -384,8 +503,8 @@ class AdlerSeasonOverview extends HTMLElement {
         place-items: center;
         font-size: 10px;
         font-weight: 700;
-        background: #16283f;
-        color: #9fb8d4;
+        background: var(--am-line);
+        color: rgba(255, 255, 255, 0.78);
       }
       .chip.w { background: #14532d; color: #86efac; }
       .chip.otw { background: #166534; color: #bbf7d0; }
@@ -399,7 +518,7 @@ class AdlerSeasonOverview extends HTMLElement {
         align-items: center;
         font-size: 11px;
         padding: 3px 0;
-        border-bottom: 1px solid rgba(22, 40, 63, 0.6);
+        border-bottom: 1px solid var(--am-line);
       }
       .res-badge {
         width: 20px;
@@ -409,53 +528,53 @@ class AdlerSeasonOverview extends HTMLElement {
         place-items: center;
         font-size: 9px;
         font-weight: 700;
-        background: #16283f;
-        color: #9fb8d4;
+        background: var(--am-line);
+        color: rgba(255, 255, 255, 0.78);
       }
       .res-badge.w { background: #14532d; color: #86efac; }
       .res-badge.otw { background: #166534; color: #bbf7d0; }
       .res-badge.otl { background: #713f12; color: #fde68a; }
       .res-badge.l { background: #7f1d1d; color: #fca5a5; }
-      .res-opponent { color: #cfe0f3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .res-comp { font-size: 8px; color: #5f7794; letter-spacing: 0.08em; }
-      .res-score { font-family: monospace; color: #ffcf3d; }
+      .res-opponent { color: var(--am-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .res-comp { font-size: 8px; color: var(--am-muted); letter-spacing: 0.08em; }
+      .res-score { font-family: ui-monospace, monospace; color: var(--am-ink); }
       .split {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 6px;
         margin-top: 10px;
         padding-top: 8px;
-        border-top: 1px solid #16283f;
+        border-top: 1px solid var(--am-line);
       }
       .split div { display: flex; flex-direction: column; align-items: center; }
-      .split-key { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: #5f7794; }
-      .split-val { font-family: monospace; font-size: 13px; color: #e8eef7; }
+      .split-key { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--am-muted); }
+      .split-val { font-family: ui-monospace, monospace; font-size: 13px; color: var(--am-ink); }
       .table { width: 100%; border-collapse: collapse; font-size: 11px; }
       .table th {
         font-size: 8px;
         letter-spacing: 0.1em;
         text-transform: uppercase;
-        color: #5f7794;
+        color: var(--am-muted);
         text-align: right;
         padding: 3px 4px;
-        border-bottom: 1px solid #16283f;
+        border-bottom: 1px solid var(--am-line);
       }
       .table th:nth-child(2) { text-align: left; }
-      .table td { padding: 3px 4px; text-align: right; color: #cfe0f3; }
+      .table td { padding: 3px 4px; text-align: right; color: var(--am-ink); }
       .table tr.adler { background: rgba(255, 77, 77, 0.12); }
-      .table tr.adler .t-name span { color: #ff8080; font-weight: 700; }
-      .t-rank { color: #7f93ad; font-family: monospace; }
+      .table tr.adler .t-name span { color: var(--am-accent); font-weight: 700; }
+      .t-rank { color: var(--am-muted); font-family: ui-monospace, monospace; }
       tr.playoff .t-rank { border-left: 2px solid #4ade80; }
-      tr.quali .t-rank { border-left: 2px solid #60a5fa; }
+      tr.quali .t-rank { border-left: 2px solid var(--am-lightblue, #80a7cc); }
       .t-name { text-align: left; display: flex; align-items: center; gap: 5px; }
       .t-logo { width: 16px; height: 16px; object-fit: contain; }
-      .t-points { font-family: monospace; font-weight: 700; color: #ffcf3d; }
-      .table-note { font-size: 8px; color: #3d5570; margin-top: 6px; text-align: right; }
+      .t-points { font-family: ui-monospace, monospace; font-weight: 700; color: var(--am-ink); }
+      .table-note { font-size: 8px; color: var(--am-muted); margin-top: 6px; text-align: right; }
       .pl-head {
         font-size: 8px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        color: #5f7794;
+        color: var(--am-muted);
         margin: 8px 0 4px;
       }
       .pl-list { display: flex; flex-direction: column; gap: 3px; }
@@ -465,22 +584,58 @@ class AdlerSeasonOverview extends HTMLElement {
         gap: 6px;
         align-items: center;
         padding: 3px 0;
-        border-bottom: 1px solid rgba(22, 40, 63, 0.6);
+        border-bottom: 1px solid var(--am-line);
       }
-      .pl-pos { font-family: monospace; font-size: 10px; color: #5f7794; width: 12px; }
-      .pl-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: #16283f; }
+      .pl-pos { font-family: ui-monospace, monospace; font-size: 10px; color: var(--am-muted); width: 12px; }
+      .pl-photo { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: var(--am-line); }
       .pl-name { display: flex; flex-direction: column; overflow: hidden; }
       .pl-name > span:first-child {
         font-size: 11px;
-        color: #e8eef7;
+        color: var(--am-ink);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .pl-meta { font-size: 8px; color: #5f7794; }
-      .pl-stat { font-family: monospace; font-size: 14px; color: #ffcf3d; }
-      .pl-unit { font-size: 8px; color: #7f93ad; margin-left: 1px; }
-      .pl-sub { font-size: 9px; color: #7f93ad; white-space: nowrap; }
+      .pl-meta { font-size: 8px; color: var(--am-muted); }
+      .pl-stat { font-family: ui-monospace, monospace; font-size: 14px; color: var(--am-ink); }
+      .pl-unit { font-size: 8px; color: var(--am-muted); margin-left: 1px; }
+      .pl-sub { font-size: 9px; color: var(--am-muted); white-space: nowrap; }
+      /* Every label runs in the club's display face, every number in a
+         tabular monospace, so columns line up the way a board does. */
+      .form-label,
+      .streak,
+      .split-key,
+      .res-comp,
+      .pl-head,
+      .pl-meta,
+      .table th,
+      .table-note {
+        font-family: 'AM Industry Inc', sans-serif;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .res-score,
+      .split-val,
+      .t-rank,
+      .t-points,
+      .pl-stat,
+      .pl-pos,
+      .table td {
+        font-variant-numeric: tabular-nums;
+      }
+      .res-badge,
+      .chip,
+      .tile-record,
+      .pl-stat,
+      .split-val {
+        font-family: 'AM Industry', sans-serif;
+        font-style: italic;
+        font-weight: 900;
+      }
+      .table tr.adler { background: rgba(229, 0, 38, 0.16); }
+      .table tr.adler .t-name span { color: #ff8094; font-weight: 700; }
+      tr.playoff .t-rank { border-left: 2px solid #5ed267; }
+
       @media (max-width: 400px) {
         .res-comp { display: none; }
         .pl-sub { display: none; }
