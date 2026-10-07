@@ -87,10 +87,10 @@ def format_scorer(player: dict | None) -> str | None:
         or player.get("officialid")
     ):
         return None
-    first = player.get("firstname") or ""
-    last = player.get("lastname") or ""
-    name = f"{first} {last}".strip()
-    return name or None
+    # Some roster entries carry a trailing space inside the first name, so the
+    # parts are joined on collapsed whitespace rather than concatenated.
+    parts = f"{player.get('firstname') or ''} {player.get('lastname') or ''}".split()
+    return " ".join(parts) or None
 
 
 def photo_url(photo_id: int | None, width: int = 200) -> str | None:
@@ -880,19 +880,49 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
 
             teams = []
             for row in group.get("scores") or []:
+                games_played = _int(row.get("gamesplayed"))
+                wins = _int(row.get("wins"))
+                losses = _int(row.get("losses"))
+                overtime_wins = _int(row.get("overtimewins"))
+                overtime_losses = _int(row.get("overtimelosses"))
+                shootout_wins = _int(row.get("shootoutwins"))
+                points = _int(row.get("points"))
+
+                # The feed has overtimewins, overtimelosses and shootoutwins
+                # but no shootoutlosses, so a team that lost a shootout is one
+                # game and one point short of its own breakdown. The missing
+                # count is the remainder of the played games, and the published
+                # points confirm it: derived this way the point sum matched all
+                # 14 rows of the table, including the three that were short.
+                shootout_losses = max(
+                    0,
+                    games_played
+                    - (wins + losses + overtime_wins + overtime_losses + shootout_wins),
+                )
+                wins_overtime = overtime_wins + shootout_wins
+                losses_overtime = overtime_losses + shootout_losses
+                derived_points = wins * 3 + wins_overtime * 2 + losses_overtime
+
                 team = {
                     "rank": _int(row.get("rank")),
                     "club_id": row.get("clubID"),
                     "name": _text(row.get("clubTitle")),
                     "short": _text(row.get("clubShortTitle")),
                     "logo": photo_url(row.get("clubLogoID"), width=48),
-                    "games_played": _int(row.get("gamesplayed")),
-                    "wins": _int(row.get("wins")),
-                    "losses": _int(row.get("losses")),
-                    "overtime_wins": _int(row.get("overtimewins")),
-                    "overtime_losses": _int(row.get("overtimelosses")),
-                    "shootout_wins": _int(row.get("shootoutwins")),
-                    "points": _int(row.get("points")),
+                    "games_played": games_played,
+                    "wins": wins,
+                    "losses": losses,
+                    "overtime_wins": overtime_wins,
+                    "overtime_losses": overtime_losses,
+                    "shootout_wins": shootout_wins,
+                    "shootout_losses": shootout_losses,
+                    "wins_overtime": wins_overtime,
+                    "losses_overtime": losses_overtime,
+                    "record": f"{wins}-{wins_overtime}-{losses_overtime}-{losses}",
+                    # False means the derivation no longer reconciles with the
+                    # published points, so the breakdown must not be trusted.
+                    "record_reconciles": derived_points == points,
+                    "points": points,
                     "points_per_game": row.get("pointsPerGame"),
                     "goals_for": _int(row.get("goalsfor")),
                     "goals_against": _int(row.get("goalsagainst")),
