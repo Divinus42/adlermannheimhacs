@@ -782,7 +782,9 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
 
         for entry in events:
             has_clock = _int(entry.get("min"), _TICKER_NO_CLOCK_MINUTE) != _TICKER_NO_CLOCK_MINUTE
+            scorer = entry.get("scorer") or entry.get("player") or {}
             item = {
+                "id": entry.get("id"),
                 "type": _text(entry.get("type")),
                 "period": _int(entry.get("period")),
                 "minute": _int(entry.get("min"), _TICKER_NO_CLOCK_MINUTE),
@@ -790,6 +792,21 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
                 "headline": _text(entry.get("headline")),
                 "text": _text(entry.get("text")),
                 "team": _text(entry.get("teamname")),
+                "side": _text(entry.get("side")),
+                # Comments carry the club photographer's pictures, uploaded
+                # during play; a goal carries the scorer's portrait. Both are
+                # the live imagery the screen of the card wants.
+                "image": _text(entry.get("imageurl")) or None,
+                "player": format_scorer(scorer) if scorer else None,
+                "jersey": _text(scorer.get("jersey")) if scorer else None,
+                "photo": _text(scorer.get("photourl")) or photo_url(scorer.get("photoid"), 600)
+                if scorer else None,
+                "goal_type": _text(entry.get("goaltype")),
+                "score_home": entry.get("homescore"),
+                "score_away": entry.get("awayscore"),
+                "infraction": _text(entry.get("infraction")),
+                # The API spells it "peneltytime".
+                "minutes": _text(entry.get("peneltytime") or entry.get("penaltytime")),
             }
             if has_clock:
                 live.append(item)
