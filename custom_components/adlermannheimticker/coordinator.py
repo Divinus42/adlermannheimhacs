@@ -69,6 +69,10 @@ _TICKER_NO_CLOCK_MINUTE = -99
 # into one monotonically growing number the cards can compare.
 _PERIOD_SECONDS = 20 * 60
 
+# The feed files the final whistle and the comments after it under this period at
+# minute 0, where they would outrank the last real period of the game.
+_POST_GAME_PERIOD = 6
+
 
 def format_scorer(player: dict | None) -> str | None:
     """Format a player name from any of the API's person objects.
@@ -838,7 +842,7 @@ class AdlerMannheimCoordinator(DataUpdateCoordinator):
                 if minute == _TICKER_NO_CLOCK_MINUTE or minute < 0:
                     continue
                 period = _int(entry.get("period"))
-                if period < 1:
+                if period < 1 or period == _POST_GAME_PERIOD:
                     continue
                 candidates.append((period, minute, _int(entry.get("sec")), entry))
 

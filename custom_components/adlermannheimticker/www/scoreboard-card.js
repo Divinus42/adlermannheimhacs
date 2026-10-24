@@ -1,4 +1,4 @@
-const CARD_VERSION = '21.2.0';
+const CARD_VERSION = '21.3.0';
 
 /* Built against two photographs of the arena cube: one at the end of a
    period in a 6:1 league game, one 28 minutes before a Champions League puck
@@ -46,6 +46,9 @@ const CLOCK_RATE = 0.75;
    The entry arrives some ten seconds after the whistle, so the hold is the
    remainder of a typical stoppage, not its full length. */
 const HOLD_AFTER = { Goal: 45, Penalty: 25, Review: 90 };
+
+/* Most game seconds the clock may carry on from the last feed event. An estimate, check it against a live game. */
+const FORECAST_CAP_SECONDS = 240;
 
 /* How long a picture keeps the screen before it yields to the squad photo:
    a scorer or a penalised player briefly, as the cube shows a replay and
@@ -569,11 +572,12 @@ class AdlerMannheimScoreboard extends HTMLElement {
   }
 
   /* Game seconds the anchor has carried to `now`: real time since the
-     anchor, less any hold still running, at the running pace. */
+     anchor, less any hold still running, at the running pace, up to the
+     forecast cap. */
   _carried(now, factor) {
     const resume = Math.max(this._anchor.wall, this._anchor.holdUntil || 0);
     const running = Math.max(0, now - resume) / 1000;
-    return this._anchor.game + running * factor;
+    return this._anchor.game + Math.min(running * factor, FORECAST_CAP_SECONDS);
   }
 
   _holding(now) {
@@ -926,15 +930,19 @@ class AdlerMannheimScoreboard extends HTMLElement {
   /* The screen is where the cube shows video. Without video it shows the
      competition's key visual with the competition mark in the middle, and
      that is what the card shows before a game. During and after a game the
-     last Adler scorer takes the screen, else the squad photo. */
+     last Adler scorer takes the screen, else the squad photo. In the final
+     hour the statistics take the screen instead of the scorer. */
   _renderScreen(game) {
     const attrs = game ? game.state.attributes || {} : {};
-    const picture = this._screenPicture(game);
     const meta = [
       attrs.competition_title || attrs.competition,
       attrs.matchday ? `${attrs.matchday}. SPIELTAG` : null,
       (attrs.arena || '').trim().toUpperCase() || null,
     ].filter(Boolean).join('  ·  ');
+    if (game && game.mode === 'final' && this._hasStats()) {
+      return this._renderStatsScreen(meta);
+    }
+    const picture = this._screenPicture(game);
 
     return `
       <div class="screen">
@@ -950,6 +958,31 @@ class AdlerMannheimScoreboard extends HTMLElement {
           ${picture && picture.sub ? `<span class="caption-sub">${escapeHtml(picture.sub)}</span>` : ''}
           ${meta ? `<span class="caption-meta">${escapeHtml(meta)}</span>` : ''}
         </div>
+      </div>`;
+  }
+
+  _hasStats() {
+    return this._stats().shots_adler !== undefined;
+  }
+
+  /* In the final hour the statistics take the screen, in the same team
+     comparison the drawer shows, large enough to read across the room. */
+  _renderStatsScreen(meta) {
+    const stats = this._stats();
+    const rows = this._statsRows(stats)
+      .map(([label, own, opponent]) => this._renderCompare(label, own, opponent))
+      .join('');
+    const notes = this._statsNotes(stats).join('  ·  ');
+
+    return `
+      <div class="screen stats-screen">
+        <div class="screen-scrim visual"></div>
+        <div class="stats-board">
+          <div class="cmp-head"><span>ADLER</span><span>GEGNER</span></div>
+          ${rows}
+          ${notes ? `<div class="stats-notes">${escapeHtml(notes)}</div>` : ''}
+        </div>
+        ${meta ? `<div class="stats-meta">${escapeHtml(meta)}</div>` : ''}
       </div>`;
   }
 
@@ -1461,7 +1494,18 @@ class AdlerMannheimScoreboard extends HTMLElement {
   }
 
   _renderStatsPanel(stats) {
-    const rows = [
+    const meta = [(stats.arena || '').trim(), ...this._statsNotes(stats)].filter(Boolean).join('  ·  ');
+
+    return `
+      <div class="panel">
+        <div class="cmp-head"><span>ADLER</span><span>GEGNER</span></div>
+        ${this._statsRows(stats).map(([label, own, opponent]) => this._renderCompare(label, own, opponent)).join('')}
+        ${meta ? `<div class="panel-meta">${escapeHtml(meta)}</div>` : ''}
+      </div>`;
+  }
+
+  _statsRows(stats) {
+    return [
       ['SCHÜSSE AUFS TOR', stats.shots_adler, stats.shots_opponent],
       ['SCHÜSSE DANEBEN', stats.shots_missed_adler, stats.shots_missed_opponent],
       ['BULLY GEWONNEN %', stats.faceoff_pct_adler, stats.faceoff_pct_opponent],
@@ -1469,24 +1513,18 @@ class AdlerMannheimScoreboard extends HTMLElement {
       ['STRAFMINUTEN', stats.pim_adler, stats.pim_opponent],
       ['PARADEN', stats.saves_adler, stats.saves_opponent],
     ];
+  }
 
+  _statsNotes(stats) {
     const referees = (stats.officials || [])
       .filter((official) => official.role && official.role.startsWith('referee'))
       .map((official) => official.name)
       .filter(Boolean);
 
-    const meta = [
-      (stats.arena || '').trim(),
+    return [
       stats.attendance ? `${Number(stats.attendance).toLocaleString('de-DE')} Zuschauer` : null,
       referees.length ? `Schiedsrichter ${referees.join(', ')}` : null,
-    ].filter(Boolean).join('  ·  ');
-
-    return `
-      <div class="panel">
-        <div class="cmp-head"><span>ADLER</span><span>GEGNER</span></div>
-        ${rows.map(([label, own, opponent]) => this._renderCompare(label, own, opponent)).join('')}
-        ${meta ? `<div class="panel-meta">${escapeHtml(meta)}</div>` : ''}
-      </div>`;
+    ].filter(Boolean);
   }
 
   _renderCompare(label, own, opponent) {
@@ -2048,6 +2086,42 @@ class AdlerMannheimScoreboard extends HTMLElement {
       .cmp-track { display: flex; height: 5px; border-radius: 3px; overflow: hidden; }
       .cmp-fill.own { background: var(--am-accent); }
       .cmp-fill.opp { background: rgba(255, 255, 255, 0.2); }
+
+      .screen.stats-screen {
+        aspect-ratio: auto;
+        min-height: 220px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 1.2em 1.3em;
+        box-sizing: border-box;
+      }
+      .stats-board {
+        position: relative;
+        width: 100%;
+        max-width: 760px;
+        margin: 0 auto;
+        box-sizing: border-box;
+        padding: 1em 1.3em;
+        border: 1px solid var(--am-line);
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.66);
+      }
+      .stats-screen .cmp-head { font-size: 11px; margin-bottom: 10px; }
+      .stats-screen .cmp { grid-template-columns: 56px 1fr 56px; gap: 12px; margin-bottom: 9px; }
+      .stats-screen .cmp-val { font-size: 18px; }
+      .stats-screen .cmp-label { font-size: 11px; }
+      .stats-screen .cmp-track { height: 7px; }
+      .stats-notes { margin-top: 8px; font-size: 11px; color: var(--am-muted); text-align: center; }
+      .stats-meta {
+        position: relative;
+        margin-top: 14px;
+        font-family: 'AM Industry Inc', 'AM 72', sans-serif;
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        color: var(--am-muted);
+        text-align: center;
+      }
 
       .timeline { max-height: 330px; overflow-y: auto; }
       .tl-block { margin-bottom: 11px; }
